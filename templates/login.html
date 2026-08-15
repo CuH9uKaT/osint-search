@@ -1,16 +1,32 @@
 <!doctype html>
 <html lang="uk">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
 <title>OSINT Search — Вхід</title>
 <style>
-body{font-family:Segoe UI,Arial;background:#0f172a;color:#e5e7eb;display:grid;place-items:center;min-height:100vh;margin:0}
-.card{width:min(420px,calc(100% - 36px));background:#111827;border:1px solid #263244;border-radius:16px;padding:24px}
-input{box-sizing:border-box;width:100%;padding:13px;margin:12px 0;border-radius:10px;border:1px solid #334155;background:#0b1220;color:#fff}
-button{width:100%;padding:13px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-weight:700}
-.error{color:#fca5a5}
-</style></head>
-<body><div class="card">
-<h2>OSINT Search</h2><p>Введи пароль доступу.</p>
-{% if error %}<div class="error">{{ error }}</div>{% endif %}
-<form method="post"><input type="password" name="password" autofocus><button>УВІЙТИ</button></form>
-</div></body></html>
+*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;display:grid;place-items:center;background:#0f172a;color:#e5e7eb;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;padding:20px;padding-bottom:max(20px,env(safe-area-inset-bottom))}
+.card{width:min(400px,100%);background:#111827;border:1px solid #263244;border-radius:16px;padding:24px 20px;box-shadow:0 10px 30px #0005}
+h2{margin:0 0 6px;font-size:1.35rem}
+p{margin:0 0 14px;color:#94a3b8;font-size:.95rem}
+input{width:100%;padding:14px;margin:0 0 12px;border-radius:12px;border:1px solid #334155;background:#0b1220;color:#fff;font-size:16px}
+button{width:100%;padding:14px;border:0;border-radius:12px;background:#2563eb;color:#fff;font-weight:700;font-size:1rem;cursor:pointer;touch-action:manipulation}
+button:hover{background:#1d4ed8}
+.error{color:#fca5a5;margin-bottom:10px;font-size:.92rem}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>OSINT Search</h2>
+  <p>Введи пароль доступу</p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="post" autocomplete="current-password">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="password" name="password" autofocus required placeholder="Пароль">
+    <button type="submit">Увійти</button>
+  </form>
+</div>
+</body>
+</html>

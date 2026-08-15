@@ -3,9 +3,37 @@ services:
     name: osint-search
     runtime: docker
     plan: free
-    healthCheckPath: /
+    healthCheckPath: /healthz
     envVars:
       - key: SECRET_KEY
         generateValue: true
       - key: APP_PASSWORD
         sync: false
+      - key: SOCIAL_SITE_TIMEOUT
+        value: "10"
+      - key: SOCIAL_SEARCH_TIMEOUT
+        value: "120"
+      - key: COMMUNITY_SITE_TIMEOUT
+        value: "10"
+      - key: COMMUNITY_SEARCH_TIMEOUT
+        value: "150"
+      - key: GAMING_SITE_TIMEOUT
+        value: "10"
+      - key: GAMING_SEARCH_TIMEOUT
+        value: "150"
+      - key: DEVELOPER_SITE_TIMEOUT
+        value: "12"
+      - key: DEVELOPER_SEARCH_TIMEOUT
+        value: "180"
+      - key: FULL_SITE_TIMEOUT
+        value: "12"
+      - key: FULL_SEARCH_TIMEOUT
+        value: "240"
+      - key: SHERLOCK_WORKERS
+        value: "20"
+      - key: RATE_SECONDS
+        value: "12"
+      - key: LOGIN_MAX_FAILS
+        value: "8"
+      - key: LOGIN_LOCK_SECONDS
+        value: "300"

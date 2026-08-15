@@ -2,143 +2,491 @@
 <html lang="uk">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
 <title>OSINT Search</title>
 <style>
-body{margin:0;background:#0f172a;color:#e5e7eb;font-family:Segoe UI,Arial,sans-serif}
-.wrap{max-width:1100px;margin:0 auto;padding:28px 18px}
-.card{background:#111827;border:1px solid #263244;border-radius:16px;padding:20px;box-shadow:0 10px 30px #0004}
-h1{margin:0 0 8px;font-size:28px}.muted{color:#94a3b8}
-.row{display:flex;gap:10px;margin:20px 0}.row input{flex:1;padding:13px 14px;border-radius:10px;border:1px solid #334155;background:#0b1220;color:#fff;font-size:16px}
-button{border:0;border-radius:10px;padding:12px 16px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
-button.secondary{background:#334155}button:disabled{opacity:.55;cursor:not-allowed}
-.stats{display:flex;gap:14px;margin:14px 0}.stat{background:#0b1220;border:1px solid #263244;border-radius:12px;padding:12px 16px}
-table{width:100%;border-collapse:collapse;margin-top:16px}th,td{padding:11px;border-bottom:1px solid #263244;text-align:left}th{color:#94a3b8}
-a{color:#60a5fa;text-decoration:none}a:hover{text-decoration:underline}
-.notice{margin-top:14px;padding:12px;border-radius:10px;background:#172033;color:#cbd5e1;font-size:13px}
-.error{color:#fca5a5;margin-top:10px}.loading{display:none;margin-top:12px;color:#93c5fd}
-@media(max-width:700px){.row{flex-direction:column}.stats{flex-direction:column}table{font-size:13px}}
+:root, [data-theme="dark"] {
+  --bg:#0f172a; --card:#111827; --border:#263244; --input:#0b1220;
+  --text:#e5e7eb; --muted:#94a3b8; --accent:#2563eb; --accent2:#1d4ed8;
+  --danger:#ef4444; --ok:#34d399; --warn:#fbbf24; --row:#0b1220;
+}
+[data-theme="light"] {
+  --bg:#f1f5f9; --card:#ffffff; --border:#e2e8f0; --input:#f8fafc;
+  --text:#0f172a; --muted:#64748b; --accent:#2563eb; --accent2:#1d4ed8;
+  --danger:#dc2626; --ok:#059669; --warn:#d97706; --row:#f8fafc;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;line-height:1.45;min-height:100dvh}
+.wrap{max-width:720px;margin:0 auto;padding:14px 12px 40px;padding-bottom:max(40px,env(safe-area-inset-bottom))}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+h1{margin:0;font-size:1.35rem;font-weight:750;letter-spacing:-.02em}
+.iconbtn{background:transparent;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:8px 10px;font-size:1rem;cursor:pointer;touch-action:manipulation}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px 14px;box-shadow:0 8px 28px #0002}
+.muted{color:var(--muted);font-size:.9rem;margin:4px 0 14px}
+label{display:block;font-size:.82rem;color:var(--muted);margin-bottom:4px}
+input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;border:1px solid var(--border);background:var(--input);color:var(--text);font-size:16px}
+.modes{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.modes button{flex:1 1 calc(50% - 8px);min-width:120px;padding:10px 8px;border-radius:10px;border:1px solid var(--border);background:var(--input);color:var(--text);font-weight:600;cursor:pointer;font-size:.82rem;line-height:1.25;text-align:center}
+.modes button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.modes button small{display:block;font-weight:500;opacity:.85;font-size:.72rem;margin-top:2px}
+.btnrow{display:flex;gap:8px;margin-top:12px}
+.btnrow button{flex:1;padding:14px;border:0;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer;touch-action:manipulation;color:#fff}
+.btn-go{background:var(--accent)}.btn-go:hover:not(:disabled){background:var(--accent2)}
+.btn-stop{background:var(--danger)}.btn-stop:disabled,.btn-go:disabled{opacity:.45;cursor:not-allowed}
+.progress{display:none;margin:14px 0 8px;padding:12px;border-radius:12px;background:var(--input);border:1px solid var(--border)}
+.progress.on{display:block}
+.pmeta{display:flex;justify-content:space-between;gap:8px;font-size:.88rem;color:var(--muted);flex-wrap:wrap}
+.pstatus{color:var(--accent);font-weight:700}
+.barwrap{height:6px;background:var(--border);border-radius:99px;overflow:hidden;margin-top:10px}
+.bar{height:100%;width:28%;background:linear-gradient(90deg,var(--accent),#60a5fa,var(--accent));background-size:200% 100%;border-radius:99px;animation:ind 1.15s linear infinite}
+@keyframes ind{0%{transform:translateX(-120%)}100%{transform:translateX(420%)}}
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0}
+@media(min-width:480px){.stats{grid-template-columns:repeat(4,1fr)}}
+.stat{background:var(--input);border:1px solid var(--border);border-radius:12px;padding:10px 12px;font-size:.82rem;color:var(--muted)}
+.stat b{display:block;color:var(--text);font-size:1.05rem;margin-top:2px;word-break:break-all}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
+.toolbar input{flex:1 1 140px;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--input);color:var(--text);font-size:15px}
+.chip{padding:8px 12px;border-radius:999px;border:1px solid var(--border);background:var(--input);color:var(--text);font-size:.82rem;font-weight:600;cursor:pointer}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.item{background:var(--row);border:1px solid var(--border);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px}
+.item-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.site{font-weight:700;font-size:.95rem}
+.badge{font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:999px;background:#064e3b33;color:var(--ok);border:1px solid #065f4633;white-space:nowrap}
+.item a{color:#60a5fa;text-decoration:none;word-break:break-all;font-size:.88rem}
+.item a:hover{text-decoration:underline}
+.item-actions{display:flex;gap:8px;flex-wrap:wrap}
+.item-actions button,.item-actions a.btnlink{
+  padding:8px 12px;border-radius:10px;border:1px solid var(--border);
+  background:var(--card);color:var(--text);font-size:.82rem;font-weight:600;
+  cursor:pointer;text-decoration:none;display:inline-block;touch-action:manipulation
+}
+.empty{text-align:center;color:var(--muted);padding:28px 10px;font-size:.95rem}
+.error{color:var(--danger);min-height:1.2em;font-size:.9rem;margin:8px 0 0}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.actions button,.actions a{
+  padding:11px 14px;border-radius:10px;border:1px solid var(--border);
+  background:var(--input);color:var(--text);font-weight:600;font-size:.88rem;
+  cursor:pointer;text-decoration:none;touch-action:manipulation
+}
+.notice{margin-top:14px;padding:12px;border-radius:12px;background:var(--input);border:1px solid var(--border);color:var(--muted);font-size:.8rem}
+.modal-bg{display:none;position:fixed;inset:0;background:#0008;z-index:50;align-items:center;justify-content:center;padding:16px}
+.modal-bg.on{display:flex}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;max-width:420px;width:100%;max-height:80dvh;overflow:auto}
+.modal h3{margin:0 0 10px}
+.modal pre{background:var(--input);padding:10px;border-radius:10px;font-size:.78rem;overflow:auto;white-space:pre-wrap}
+.modal .close{margin-top:12px;width:100%;padding:12px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-weight:700;cursor:pointer}
 </style>
 </head>
-<body>
+<body data-theme="dark">
 <div class="wrap">
-  <div class="card">
+  <div class="topbar">
     <h1>OSINT Search</h1>
-    <div class="muted">Пошук username у публічних сервісах через Sherlock</div>
+    <div style="display:flex;gap:6px">
+      <button type="button" class="iconbtn" id="themeBtn" title="Тема">☀️</button>
+      <button type="button" class="iconbtn" id="diagBtn" title="Діагностика">⚙️</button>
+    </div>
+  </div>
 
-    <div class="row">
-      <input id="username" maxlength="64" placeholder="Введи username" autocomplete="off">
-      <button id="search">ПОШУК</button>
-      <button id="stop" class="secondary" disabled>СТОП</button>
+  <div class="card">
+    <p class="muted">Пошук username через Sherlock · результати з’являються на льоту</p>
+
+    <label for="username">Username</label>
+    <input id="username" type="text" maxlength="64" placeholder="наприклад johndoe" autocomplete="username" enterkeyhint="search">
+
+    <div class="modes" id="modes" role="group" aria-label="Режим">
+      <!-- filled by JS from /api/modes -->
+    </div>
+    <div id="modeHint" class="notice" style="margin-top:10px">Соцмережі: швидкий режим для перевірки публічних профілів.</div>
+
+    <div class="btnrow">
+      <button type="button" class="btn-go" id="search">Пошук</button>
+      <button type="button" class="btn-stop" id="stop" disabled>Стоп</button>
     </div>
 
-    <div id="loading" class="loading">Виконується пошук…</div>
-    <div id="error" class="error"></div>
+    <div id="progress" class="progress" aria-live="polite">
+      <div class="pmeta">
+        <span class="pstatus" id="pStatus">Перевіряється…</span>
+        <span id="pElapsed">0 с</span>
+      </div>
+      <div class="barwrap"><div class="bar"></div></div>
+    </div>
+
+    <div id="error" class="error" role="alert"></div>
 
     <div class="stats">
-      <div class="stat">Username: <b id="u">—</b></div>
-      <div class="stat">Знайдено: <b id="count">0</b></div>
+      <div class="stat">Username<b id="u">—</b></div>
+      <div class="stat">Статус<b id="st">—</b></div>
+      <div class="stat">Знайдено<b id="count">0</b></div>
+      <div class="stat">Час<b id="took">—</b></div>
     </div>
 
-    <div style="overflow:auto">
-      <table>
-        <thead><tr><th>Сайт</th><th>URL</th><th>Статус</th></tr></thead>
-        <tbody id="results"></tbody>
-      </table>
+    <div class="toolbar">
+      <button type="button" class="chip on" data-filter="all" id="fAll">Усі</button>
+      <button type="button" class="chip" data-filter="found" id="fFound">Знайдені</button>
+      <input type="search" id="filter" placeholder="Фільтр сайтів…" autocomplete="off">
     </div>
 
-    <div class="row">
-      <button id="csv" class="secondary" disabled>Експорт CSV</button>
-      <a href="/logout" style="padding:12px 8px">Вийти</a>
+    <div id="list" class="list">
+      <div class="empty">Введи username і натисни «Пошук»</div>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="csv" disabled>CSV</button>
+      <button type="button" id="json" disabled>JSON</button>
+      <button type="button" id="txt" disabled>TXT</button>
+      <button type="button" id="clear">Очистити</button>
+      <a href="/logout">Вийти</a>
     </div>
 
     <div class="notice">
-      Результат Sherlock означає, що сторінка відповідає перевірці username. Це не доводить,
-      що профіль належить конкретній людині. Перевіряй збіги за відкритими ознаками профілю.
+      Збіг = сторінка пройшла перевірку Sherlock. Це не доказ особи. Стоп зберігає вже знайдене.
+      Категорії побудовані з локального каталогу Sherlock (data.json). NSFW виключено.
     </div>
   </div>
 </div>
 
+<div class="modal-bg" id="diagModal">
+  <div class="modal">
+    <h3>Діагностика</h3>
+    <pre id="diagOut">Завантаження…</pre>
+    <button type="button" class="close" id="diagClose">Закрити</button>
+  </div>
+</div>
+
 <script>
-let controller = null;
-let current = {username:"", results:[]};
+(() => {
+  const $ = id => document.getElementById(id);
+  const STATUS = {
+    queued: "У черзі",
+    running: "Перевіряється",
+    done: "Завершено",
+    error: "Помилка",
+    cancelled: "Скасовано",
+    timeout: "Таймаут",
+  };
 
-const $ = id => document.getElementById(id);
-const setBusy = busy => {
-  $("search").disabled = busy;
-  $("stop").disabled = !busy;
-  $("loading").style.display = busy ? "block" : "none";
-};
+  let csrf = {{ csrf|tojson }};
+  let mode = "social";
+  let jobId = null;
+  let pollTimer = null;
+  let elapsedTimer = null;
+  let startedAt = 0;
+  let busy = false;
+  let current = { username: "", results: [] };
+  let filterMode = "all";
+  let filterText = "";
+  let knownCount = 0;
+  let modeMeta = {};
 
-async function runSearch(){
-  const username = $("username").value.trim();
-  $("error").textContent = "";
-  if(!/^[A-Za-z0-9_.-]{1,64}$/.test(username)){
-    $("error").textContent = "Username має містити 1–64 символи: A-Z, a-z, 0-9, крапку, дефіс або підкреслення.";
-    return;
+  // Theme
+  const savedTheme = localStorage.getItem("theme") || "dark";
+  document.body.setAttribute("data-theme", savedTheme);
+  $("themeBtn").textContent = savedTheme === "dark" ? "☀️" : "🌙";
+  $("themeBtn").onclick = () => {
+    const next = document.body.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.body.setAttribute("data-theme", next);
+    localStorage.setItem("theme", next);
+    $("themeBtn").textContent = next === "dark" ? "☀️" : "🌙";
+    document.querySelector('meta[name="theme-color"]').content = next === "dark" ? "#0f172a" : "#f1f5f9";
+  };
+
+  // PWA
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
 
-  $("u").textContent = username;
-  $("count").textContent = "0";
-  $("results").innerHTML = "";
-  $("csv").disabled = true;
-  current = {username, results:[]};
-  setBusy(true);
-
-  controller = new AbortController();
-  try{
-    const r = await fetch("/api/search", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({username}),
-      signal:controller.signal
-    });
-    const data = await r.json();
-    if(!r.ok || !data.ok) throw new Error(data.error || "Помилка пошуку");
-
-    current.results = data.results || [];
-    $("count").textContent = current.results.length;
-
-    for(const item of current.results){
-      const tr = document.createElement("tr");
-      const tdSite = document.createElement("td");
-      const tdUrl = document.createElement("td");
-      const tdStatus = document.createElement("td");
-      tdSite.textContent = item.site;
-      const a = document.createElement("a");
-      a.href = item.url; a.target="_blank"; a.rel="noopener noreferrer";
-      a.textContent = item.url;
-      tdUrl.appendChild(a);
-      tdStatus.textContent = item.status;
-      tr.append(tdSite, tdUrl, tdStatus);
-      $("results").appendChild(tr);
+  function setBusy(v) {
+    busy = v;
+    $("search").disabled = v;
+    $("stop").disabled = !v;
+    $("progress").classList.toggle("on", v);
+    if (!v) {
+      clearInterval(elapsedTimer); elapsedTimer = null;
+      clearTimeout(pollTimer); pollTimer = null;
     }
-    $("csv").disabled = current.results.length === 0;
-  }catch(e){
-    if(e.name !== "AbortError") $("error").textContent = e.message;
-  }finally{
-    controller = null;
-    setBusy(false);
   }
-}
 
-$("search").onclick = runSearch;
-$("username").onkeydown = e => { if(e.key === "Enter") runSearch(); };
-$("stop").onclick = () => { if(controller) controller.abort(); setBusy(false); };
-$("csv").onclick = async () => {
-  const r = await fetch("/api/export.csv", {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify(current)
-  });
-  if(!r.ok){ $("error").textContent="Не вдалося створити CSV."; return; }
-  const blob = await r.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = `${current.username || "results"}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-};
+  function setStatus(code) {
+    $("st").textContent = STATUS[code] || code || "—";
+    $("pStatus").textContent = STATUS[code] || code || "…";
+  }
+
+  function matchesFilter(item) {
+    if (filterMode === "found" && item.status !== "found") return false;
+    if (!filterText) return true;
+    const q = filterText.toLowerCase();
+    return (item.site || "").toLowerCase().includes(q) || (item.url || "").toLowerCase().includes(q);
+  }
+
+  function renderList(results, {appendOnly} = {}) {
+    const list = $("list");
+    const filtered = (results || []).filter(matchesFilter);
+
+    if (!filtered.length) {
+      list.innerHTML = `<div class="empty">${busy ? "Шукаємо…" : "Нічого не знайдено"}</div>`;
+      return;
+    }
+
+    // Full re-render (simple & correct with filters)
+    list.innerHTML = "";
+    for (const item of filtered) {
+      const el = document.createElement("div");
+      el.className = "item";
+      el.innerHTML = `
+        <div class="item-top">
+          <span class="site"></span>
+          <span class="badge">Знайдено</span>
+        </div>
+        <a target="_blank" rel="noopener noreferrer"></a>
+        <div class="item-actions">
+          <a class="btnlink" target="_blank" rel="noopener noreferrer">Відкрити</a>
+          <button type="button" class="copy">Копіювати URL</button>
+        </div>`;
+      el.querySelector(".site").textContent = item.site || "";
+      const a = el.querySelector("a");
+      a.href = item.url || "#";
+      a.textContent = item.url || "";
+      el.querySelector(".btnlink").href = item.url || "#";
+      el.querySelector(".copy").onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(item.url || "");
+          el.querySelector(".copy").textContent = "Скопійовано";
+          setTimeout(() => { el.querySelector(".copy").textContent = "Копіювати URL"; }, 1200);
+        } catch {
+          el.querySelector(".copy").textContent = "Не вдалося";
+        }
+      };
+      list.appendChild(el);
+    }
+  }
+
+  function applyFilters() {
+    renderList(current.results);
+  }
+
+  $("fAll").onclick = () => {
+    filterMode = "all";
+    $("fAll").classList.add("on"); $("fFound").classList.remove("on");
+    applyFilters();
+  };
+  $("fFound").onclick = () => {
+    filterMode = "found";
+    $("fFound").classList.add("on"); $("fAll").classList.remove("on");
+    applyFilters();
+  };
+  $("filter").oninput = (e) => {
+    filterText = e.target.value.trim();
+    applyFilters();
+  };
+
+  function setMode(id) {
+    mode = id;
+    document.querySelectorAll("#modes button").forEach(b => {
+      b.classList.toggle("active", b.dataset.mode === id);
+    });
+    const m = modeMeta[id];
+    if (m) {
+      const timeText = m.search_timeout >= 180 ? `до ${Math.round(m.search_timeout / 60)} хв` : `до ${m.search_timeout} с`;
+      const extra = id === "full" ? " Повний пошук може зайняти 1–3 хвилини на безкоштовному Render." : "";
+      $("modeHint").textContent = `${m.label}: ${m.count} сайтів · орієнтовний ліміт ${timeText}.${extra}`;
+    }
+  }
+
+  async function loadModes() {
+    const box = $("modes");
+    try {
+      const r = await fetch("/api/modes");
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        box.innerHTML = `<div class="empty" style="padding:8px">Каталог недоступний</div>`;
+        $("error").textContent = d.error || "Каталог Sherlock не завантажився";
+        $("search").disabled = true;
+        return;
+      }
+      const modes = (d.modes || []);
+      modeMeta = Object.fromEntries(modes.map(m => [m.id, m]));
+      box.innerHTML = "";
+      for (const m of modes) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.dataset.mode = m.id;
+        b.innerHTML = `${m.emoji || ""} ${m.label}<small>${m.count != null ? m.count + " сайтів" : ""}</small>`;
+        if (m.id === mode) b.classList.add("active");
+        b.onclick = () => setMode(m.id);
+        box.appendChild(b);
+      }
+      if (!modes.find(m => m.id === mode) && modes[0]) setMode(modes[0].id);
+      else setMode(mode);
+    } catch (e) {
+      box.innerHTML = `<div class="empty" style="padding:8px">Помилка каталогу</div>`;
+      $("error").textContent = e.message || "Не вдалося завантажити режими";
+      $("search").disabled = true;
+    }
+  }
+  loadModes();
+
+  async function poll() {
+    if (!jobId || !busy) return;
+    try {
+      const r = await fetch("/api/search/" + encodeURIComponent(jobId), {
+        headers: { Accept: "application/json" },
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) throw new Error(data.error || "Помилка статусу");
+
+      setStatus(data.status);
+      if (data.site_count) {
+        $("pStatus").textContent = `${STATUS[data.status] || data.status} · ${data.site_count} сайтів`;
+      }
+      current.results = data.results || [];
+      $("count").textContent = String(current.results.length);
+
+      if (current.results.length !== knownCount) {
+        knownCount = current.results.length;
+        renderList(current.results);
+      }
+
+      const terminal = ["done", "error", "cancelled", "timeout"].includes(data.status);
+      if (terminal) {
+        $("took").textContent = data.elapsed_sec != null
+          ? data.elapsed_sec + " с"
+          : Math.round((Date.now() - startedAt) / 1000) + " с";
+        renderList(current.results);
+        const has = current.results.length > 0;
+        $("csv").disabled = !has;
+        $("json").disabled = !has;
+        $("txt").disabled = !has;
+        if (data.error) $("error").textContent = data.error;
+        setBusy(false);
+        jobId = null;
+        return;
+      }
+      pollTimer = setTimeout(poll, 900);
+    } catch (e) {
+      $("error").textContent = e.message || "Помилка опитування";
+      setStatus("error");
+      setBusy(false);
+      jobId = null;
+    }
+  }
+
+  async function startSearch() {
+    const username = $("username").value.trim();
+    $("error").textContent = "";
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(username)) {
+      $("error").textContent = "Username: 1–64 символи (A-Z a-z 0-9 . - _).";
+      return;
+    }
+    if (busy) return;
+
+    current = { username, results: [] };
+    knownCount = 0;
+    $("u").textContent = username;
+    $("count").textContent = "0";
+    $("took").textContent = "—";
+    $("csv").disabled = true; $("json").disabled = true; $("txt").disabled = true;
+    $("list").innerHTML = `<div class="empty">Запуск…</div>`;
+    setStatus("queued");
+    setBusy(true);
+    startedAt = Date.now();
+    $("pElapsed").textContent = "0 с";
+    elapsedTimer = setInterval(() => {
+      $("pElapsed").textContent = Math.round((Date.now() - startedAt) / 1000) + " с";
+    }, 400);
+
+    try {
+      const r = await fetch("/api/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "X-CSRF-Token": csrf,
+        },
+        body: JSON.stringify({ username, mode, csrf }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) throw new Error(data.error || "Не вдалося запустити");
+      jobId = data.job_id;
+      setStatus(data.status || "queued");
+      pollTimer = setTimeout(poll, 600);
+    } catch (e) {
+      $("error").textContent = e.message;
+      setStatus("error");
+      setBusy(false);
+      jobId = null;
+    }
+  }
+
+  async function stopSearch() {
+    if (!jobId) { setBusy(false); return; }
+    $("stop").disabled = true;
+    try {
+      await fetch("/api/search/" + encodeURIComponent(jobId) + "/cancel", {
+        method: "POST",
+        headers: { Accept: "application/json", "X-CSRF-Token": csrf, "Content-Type": "application/json" },
+        body: JSON.stringify({ csrf }),
+      });
+    } catch (_) {}
+    setTimeout(poll, 250);
+  }
+
+  async function exportFmt(format) {
+    try {
+      const r = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        body: JSON.stringify({ username: current.username, results: current.results, format, csrf }),
+      });
+      if (!r.ok) { $("error").textContent = "Помилка експорту"; return; }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `osint_${current.username || "results"}.${format === "json" ? "json" : format === "txt" ? "txt" : "csv"}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      $("error").textContent = e.message || "Помилка експорту";
+    }
+  }
+
+  $("search").onclick = startSearch;
+  $("stop").onclick = stopSearch;
+  $("username").onkeydown = e => { if (e.key === "Enter") startSearch(); };
+  $("csv").onclick = () => exportFmt("csv");
+  $("json").onclick = () => exportFmt("json");
+  $("txt").onclick = () => exportFmt("txt");
+  $("clear").onclick = () => {
+    if (busy) return;
+    current = { username: "", results: [] };
+    knownCount = 0;
+    $("u").textContent = "—"; $("count").textContent = "0"; $("took").textContent = "—"; $("st").textContent = "—";
+    $("error").textContent = "";
+    $("list").innerHTML = `<div class="empty">Введи username і натисни «Пошук»</div>`;
+    $("csv").disabled = true; $("json").disabled = true; $("txt").disabled = true;
+  };
+
+  $("diagBtn").onclick = async () => {
+    $("diagModal").classList.add("on");
+    $("diagOut").textContent = "Завантаження…";
+    try {
+      const r = await fetch("/api/diag");
+      const d = await r.json();
+      $("diagOut").textContent = JSON.stringify(d, null, 2);
+    } catch (e) {
+      $("diagOut").textContent = String(e);
+    }
+  };
+  $("diagClose").onclick = () => $("diagModal").classList.remove("on");
+  $("diagModal").onclick = (e) => { if (e.target === $("diagModal")) $("diagModal").classList.remove("on"); };
+})();
 </script>
 </body>
 </html>
