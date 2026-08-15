@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: osint-search
+    runtime: docker
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_PASSWORD
+        sync: false

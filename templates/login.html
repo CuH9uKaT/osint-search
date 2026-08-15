@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="uk">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OSINT Search — Вхід</title>
+<style>
+body{font-family:Segoe UI,Arial;background:#0f172a;color:#e5e7eb;display:grid;place-items:center;min-height:100vh;margin:0}
+.card{width:min(420px,calc(100% - 36px));background:#111827;border:1px solid #263244;border-radius:16px;padding:24px}
+input{box-sizing:border-box;width:100%;padding:13px;margin:12px 0;border-radius:10px;border:1px solid #334155;background:#0b1220;color:#fff}
+button{width:100%;padding:13px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-weight:700}
+.error{color:#fca5a5}
+</style></head>
+<body><div class="card">
+<h2>OSINT Search</h2><p>Введи пароль доступу.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="post"><input type="password" name="password" autofocus><button>УВІЙТИ</button></form>
+</div></body></html>
