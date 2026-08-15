@@ -1,81 +1,56 @@
-# OSINT Search — final
+# OSINT Search (final)
 
-Flask + pinned Sherlock 0.16.0 web UI for checking a username against public sites in the bundled `data.json`.
+Веб-обгортка над [Sherlock](https://github.com/sherlock-project/sherlock) 0.16.0:
 
-## What is already protected
+- фоновий job, live-результати, реальний **STOP**
+- pinned **`data.json`** (`--json`), NSFW виключено
+- категорії: Соцмережі / Спільноти / Ігри / Розробка / Повний
+- mode-specific timeouts + memory-safe `SHERLOCK_WORKERS` (default 6)
+- auth, CSRF, 1 глобальний пошук, rate limit IP+session
+- PWA, mobile UI, CSV/JSON/TXT, `/healthz`, діагностика
 
-- Background Job + live polling results
-- Server-side STOP using the Sherlock process group
-- Session-bound jobs
-- One global Sherlock job on the free Render service
-- IP + session rate limiting
-- Password authentication + CSRF
-- Pinned local `data.json`; NSFW is excluded
-- CSV / JSON / TXT export
-- Mobile UI + PWA
-- `/healthz` and `/api/diag`
+Деплой: див. **[DEPLOY.md](DEPLOY.md)**.
 
-## Search modes
+## Локально
 
-- 📱 Social — curated social/profile platforms from the bundled catalog
-- 💬 Community — forums and communities
-- 🎮 Gaming — gaming platforms and trackers
-- 💻 Developer — coding/dev/CTF/tech platforms
-- 🌐 Full — every non-NSFW site in the bundled catalog
+```bash
+export SECRET_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))')
+export APP_PASSWORD=devpass
+export SHERLOCK_WORKERS=6
+pip install -r requirements.txt
+python app.py
+```
 
-The displayed site counts come from the actual bundled `data.json`, not hard-coded totals.
+## Режими (типові counts з bundled data.json)
 
-## Mode-specific timeouts
+| Режим | ~N | Timeout site / total |
+|--------|-----|----------------------|
+| 📱 Соцмережі | 72 | 10 / 120 с |
+| 💬 Спільноти | 101 | 12 / 150 с |
+| 🎮 Ігри | 49 | 12 / 150 с |
+| 💻 Розробка | 100 | 12 / 150 с |
+| 🌐 Повний | 462 | 12 / 210 с |
 
-| Mode | Site timeout | Overall timeout |
-|---|---:|---:|
-| Social | 10 s | 120 s |
-| Community | 10 s | 150 s |
-| Gaming | 10 s | 150 s |
-| Developer | 12 s | 180 s |
-| Full | 12 s | 240 s |
+Точні числа — у UI та `/api/modes` після старту.
 
-All values can be overridden in Render with `SOCIAL_SITE_TIMEOUT`, `SOCIAL_SEARCH_TIMEOUT`, etc.
+## Налаштування пам'яті
 
-## Sherlock workers note
+- `SHERLOCK_WORKERS=6` — кількість паралельних HTTP-запитів усередині Sherlock.
+- `SITE_BATCH_SIZE=20` — скільки сайтів передається одному дочірньому запуску.
+- `CHILD_MEMORY_MB=384` — жорсткий ліміт адресного простору Sherlock-процесу на Linux; батьківський Flask/Gunicorn не обмежується цим значенням.
+- `ALLOW_FULL_SEARCH=0` — безпечне значення для free Render. Повний пошук можна ввімкнути лише після збільшення ресурсів і тесту.
 
-`SHERLOCK_WORKERS` is accepted as a configuration value (default 20, capped at 40) for forward compatibility. **Sherlock 0.16.0 itself does not expose a `--workers` CLI option; its internal request pool is fixed at 20 workers.** The application therefore does not pass an unsupported flag. The diagnostic log reports both the requested value and the effective 20-worker value.
+## API (скорочено)
 
-## Startup smoke test
+- `GET /api/modes` — режими, eta, warning
+- `POST /api/search` `{username, mode}` → `job_id`
+- `GET /api/search/<id>` — статус + results
+- `POST /api/search/<id>/cancel`
+- `POST /api/export` `{format: csv|json|txt}`
+- `GET /api/diag` · `GET /healthz`
 
-On startup the service logs:
+Mutating requests: header `X-CSRF-Token`.
 
-- Sherlock version
-- `data.json` presence and SHA-256 prefix
-- usable / excluded counts
-- category counts
-- requested/effective worker setting
 
-If the catalog is missing or invalid, search endpoints return 503 instead of silently running with an unknown catalog.
-
-## Render deployment
-
-1. Connect the GitHub repository as a Render Docker Web Service.
-2. Set `APP_PASSWORD` to a strong private password.
-3. Keep the generated `SECRET_KEY`.
-4. Leave the mode-specific defaults unless you have a reason to change them.
-5. Health check: `/healthz`.
-6. Pushes to `main` trigger a new deployment.
-
-After deployment, open the site and start with **📱 Соцмережі**. Use **🌐 Повний** when you really need the full catalog; on the free Render plan it can take roughly 1–3 minutes and may be affected by cold starts and site-side blocking.
-
-## Manual Render smoke test
-
-After the first deployment:
-
-1. Start a **Full** search.
-2. Wait about 15 seconds.
-3. Press **Стоп**.
-4. Confirm that the status becomes **Скасовано** and already-found results remain.
-5. Open **⚙️ Diagnostics** and confirm the catalog and Sherlock version are reported.
-
-This STOP test must be performed on the actual Render service because process-group behaviour depends on the production process/container environment.
-
-## Privacy / interpretation
-
-A Sherlock match means the public page passed Sherlock's site-specific check. It does not prove that a particular account belongs to a particular person. Verify matches independently and use only information you are authorized to access.
+### Memory-safe Sherlock launcher
+`run_sherlock.py` запускає Sherlock у дочірньому процесі та застосовує `SHERLOCK_WORKERS` саме всередині цього процесу. Це важливо: патч класу у Flask-процесі не впливає на окремий `python -m sherlock_project`. Для free Render базові значення — 6 workers, 20 сайтів у пакеті, ліміт дочірнього процесу 384 MB.

@@ -2,7 +2,9 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    # Reduce memory fragmentation a bit
+    MALLOC_ARENA_MAX=2
 
 WORKDIR /app
 
@@ -17,7 +19,6 @@ USER appuser
 
 EXPOSE 10000
 
-# 1 worker: jobs + rate limit in process memory.
-# threads>1 so poll/cancel work while a search runs.
-# timeout > SEARCH_TIMEOUT for cleanup margin.
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 8 --timeout 360 --graceful-timeout 25 --access-logfile - --error-logfile - app:app"]
+# 1 Gunicorn worker + 2 threads — keep the web process small
+# Sherlock child processes are separately limited by app.py
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 2 --timeout 360 --graceful-timeout 20 --max-requests 80 --max-requests-jitter 20 --access-logfile - --error-logfile - app:app"]

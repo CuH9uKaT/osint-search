@@ -9,31 +9,33 @@ services:
         generateValue: true
       - key: APP_PASSWORD
         sync: false
-      - key: SOCIAL_SITE_TIMEOUT
-        value: "10"
-      - key: SOCIAL_SEARCH_TIMEOUT
-        value: "120"
-      - key: COMMUNITY_SITE_TIMEOUT
-        value: "10"
-      - key: COMMUNITY_SEARCH_TIMEOUT
-        value: "150"
-      - key: GAMING_SITE_TIMEOUT
-        value: "10"
-      - key: GAMING_SEARCH_TIMEOUT
-        value: "150"
-      - key: DEVELOPER_SITE_TIMEOUT
-        value: "12"
-      - key: DEVELOPER_SEARCH_TIMEOUT
-        value: "180"
-      - key: FULL_SITE_TIMEOUT
-        value: "12"
-      - key: FULL_SEARCH_TIMEOUT
-        value: "240"
       - key: SHERLOCK_WORKERS
+        value: "6"
+      - key: SITE_BATCH_SIZE
         value: "20"
+      - key: CHILD_MEMORY_MB
+        value: "384"
+      - key: ALLOW_FULL_SEARCH
+        value: "0"
       - key: RATE_SECONDS
+        value: "15"
+      - key: SITE_TIMEOUT_SOCIAL
+        value: "10"
+      - key: SEARCH_TIMEOUT_SOCIAL
+        value: "120"
+      - key: SITE_TIMEOUT_COMMUNITY
         value: "12"
-      - key: LOGIN_MAX_FAILS
-        value: "8"
-      - key: LOGIN_LOCK_SECONDS
-        value: "300"
+      - key: SEARCH_TIMEOUT_COMMUNITY
+        value: "150"
+      - key: SITE_TIMEOUT_GAMING
+        value: "12"
+      - key: SEARCH_TIMEOUT_GAMING
+        value: "150"
+      - key: SITE_TIMEOUT_DEVELOPER
+        value: "12"
+      - key: SEARCH_TIMEOUT_DEVELOPER
+        value: "150"
+      - key: SITE_TIMEOUT_FULL
+        value: "12"
+      - key: SEARCH_TIMEOUT_FULL
+        value: "210"

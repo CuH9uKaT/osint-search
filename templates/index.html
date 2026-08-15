@@ -103,7 +103,7 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
     <div class="modes" id="modes" role="group" aria-label="Режим">
       <!-- filled by JS from /api/modes -->
     </div>
-    <div id="modeHint" class="notice" style="margin-top:10px">Соцмережі: швидкий режим для перевірки публічних профілів.</div>
+    <div id="modeHint" class="muted" style="margin:0 0 10px;font-size:.85rem"></div>
 
     <div class="btnrow">
       <button type="button" class="btn-go" id="search">Пошук</button>
@@ -147,7 +147,7 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
 
     <div class="notice">
       Збіг = сторінка пройшла перевірку Sherlock. Це не доказ особи. Стоп зберігає вже знайдене.
-      Категорії побудовані з локального каталогу Sherlock (data.json). NSFW виключено.
+      Категорії з локального data.json (NSFW виключено). «Соцмережі» — найшвидший старт; «Повний» може тривати 1–3 хв.
     </div>
   </div>
 </div>
@@ -183,7 +183,6 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
   let filterMode = "all";
   let filterText = "";
   let knownCount = 0;
-  let modeMeta = {};
 
   // Theme
   const savedTheme = localStorage.getItem("theme") || "dark";
@@ -286,16 +285,24 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
     applyFilters();
   };
 
+  let modesMeta = {};
   function setMode(id) {
     mode = id;
     document.querySelectorAll("#modes button").forEach(b => {
       b.classList.toggle("active", b.dataset.mode === id);
     });
-    const m = modeMeta[id];
-    if (m) {
-      const timeText = m.search_timeout >= 180 ? `до ${Math.round(m.search_timeout / 60)} хв` : `до ${m.search_timeout} с`;
-      const extra = id === "full" ? " Повний пошук може зайняти 1–3 хвилини на безкоштовному Render." : "";
-      $("modeHint").textContent = `${m.label}: ${m.count} сайтів · орієнтовний ліміт ${timeText}.${extra}`;
+    const m = modesMeta[id] || {};
+    const hint = $("modeHint");
+    if (!hint) return;
+    let parts = [];
+    if (m.count != null) parts.push(m.count + " сайтів");
+    if (m.eta) parts.push("орієнтовно " + m.eta);
+    hint.textContent = parts.join(" · ");
+    if (m.warning) {
+      hint.textContent += " — " + m.warning;
+      hint.style.color = "var(--warn)";
+    } else {
+      hint.style.color = "";
     }
   }
 
@@ -311,15 +318,21 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
         return;
       }
       const modes = (d.modes || []);
-      modeMeta = Object.fromEntries(modes.map(m => [m.id, m]));
       box.innerHTML = "";
+      modesMeta = {};
       for (const m of modes) {
+        modesMeta[m.id] = m;
         const b = document.createElement("button");
         b.type = "button";
         b.dataset.mode = m.id;
-        b.innerHTML = `${m.emoji || ""} ${m.label}<small>${m.count != null ? m.count + " сайтів" : ""}</small>`;
+        const eta = m.eta ? ` · ${m.eta}` : "";
+        b.innerHTML = `${m.emoji || ""} ${m.label}<small>${m.count != null ? m.count + " сайтів" : ""}${eta}</small>`;
         if (m.id === mode) b.classList.add("active");
-        b.onclick = () => setMode(m.id);
+        if (m.disabled) {
+          b.disabled = true;
+          b.style.opacity = "0.45";
+        }
+        b.onclick = () => { if (!m.disabled) setMode(m.id); };
         box.appendChild(b);
       }
       if (!modes.find(m => m.id === mode) && modes[0]) setMode(modes[0].id);
@@ -342,8 +355,8 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
       if (!r.ok || !data.ok) throw new Error(data.error || "Помилка статусу");
 
       setStatus(data.status);
-      if (data.site_count) {
-        $("pStatus").textContent = `${STATUS[data.status] || data.status} · ${data.site_count} сайтів`;
+      if (data.batch_info && (data.status === "running" || data.status === "queued")) {
+        $("pStatus").textContent = (STATUS[data.status] || data.status) + " · пакет " + data.batch_info;
       }
       current.results = data.results || [];
       $("count").textContent = String(current.results.length);
@@ -394,6 +407,8 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
     $("csv").disabled = true; $("json").disabled = true; $("txt").disabled = true;
     $("list").innerHTML = `<div class="empty">Запуск…</div>`;
     setStatus("queued");
+    const meta = modesMeta[mode] || {};
+    $("pStatus").textContent = (STATUS.queued || "У черзі") + (meta.label ? " · " + meta.label : "");
     setBusy(true);
     startedAt = Date.now();
     $("pElapsed").textContent = "0 с";

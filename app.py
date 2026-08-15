@@ -1,6 +1,6 @@
 """
-OSINT Search — Flask + Sherlock
-Streaming results, real cancel, session-bound jobs, PWA-ready API.
+OSINT Search — Flask + Sherlock (memory-safe for free Render ~512MB).
+Batched site checks, low workers, real cancel, streaming results.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import secrets
+import select
 import signal
 import subprocess
 import sys
@@ -20,11 +21,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 import categories
-
 from flask import (
     Flask,
     Response,
@@ -36,9 +36,6 @@ from flask import (
     url_for,
 )
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -46,9 +43,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("osint")
 
-# ---------------------------------------------------------------------------
-# Config from environment
-# ---------------------------------------------------------------------------
+
 def _env(name: str, default: str | None = None) -> str | None:
     v = os.environ.get(name)
     if v is None or str(v).strip() == "":
@@ -58,42 +53,52 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 SECRET_KEY = _env("SECRET_KEY")
 APP_PASSWORD = _env("APP_PASSWORD")
+
+# Free Render: default workers=8 (not 20). Hard cap 24.
+SHERLOCK_WORKERS = min(12, max(1, int(_env("SHERLOCK_WORKERS", "6") or "6")))
+SITE_BATCH_SIZE = max(10, min(30, int(_env("SITE_BATCH_SIZE", "20") or "20")))
+ALLOW_FULL_SEARCH = (_env("ALLOW_FULL_SEARCH", "0") or "0") not in ("0", "false", "False", "no")
+CHILD_MEMORY_MB = max(256, min(448, int(_env("CHILD_MEMORY_MB", "384") or "384")))
+
 SITE_TIMEOUT = max(5, int(_env("SITE_TIMEOUT", "12") or "12"))
 SEARCH_TIMEOUT = max(30, int(_env("SEARCH_TIMEOUT", "180") or "180"))
 RATE_SECONDS = max(1, int(_env("RATE_SECONDS", "12") or "12"))
-# Sherlock 0.16.0 has an internal 20-thread request pool; it does not expose a
-# --workers CLI flag. Keep this env for forward compatibility, but never pass
-# an unsupported flag to the pinned version. See _sherlock_workers().
-SHERLOCK_WORKERS = min(40, max(1, int(_env("SHERLOCK_WORKERS", "20") or "20")))
-
-MODE_LIMITS = {
-    "social": {
-        "site_timeout": max(5, int(_env("SOCIAL_SITE_TIMEOUT", "10") or "10")),
-        "search_timeout": max(30, int(_env("SOCIAL_SEARCH_TIMEOUT", "120") or "120")),
-    },
-    "community": {
-        "site_timeout": max(5, int(_env("COMMUNITY_SITE_TIMEOUT", "10") or "10")),
-        "search_timeout": max(30, int(_env("COMMUNITY_SEARCH_TIMEOUT", "150") or "150")),
-    },
-    "gaming": {
-        "site_timeout": max(5, int(_env("GAMING_SITE_TIMEOUT", "10") or "10")),
-        "search_timeout": max(30, int(_env("GAMING_SEARCH_TIMEOUT", "150") or "150")),
-    },
-    "developer": {
-        "site_timeout": max(5, int(_env("DEVELOPER_SITE_TIMEOUT", "12") or "12")),
-        "search_timeout": max(30, int(_env("DEVELOPER_SEARCH_TIMEOUT", "180") or "180")),
-    },
-    "full": {
-        "site_timeout": max(5, int(_env("FULL_SITE_TIMEOUT", "12") or "12")),
-        "search_timeout": max(30, int(_env("FULL_SEARCH_TIMEOUT", "240") or "240")),
-    },
-}
 LOGIN_MAX_FAILS = max(3, int(_env("LOGIN_MAX_FAILS", "8") or "8"))
 LOGIN_LOCK_SECONDS = max(30, int(_env("LOGIN_LOCK_SECONDS", "300") or "300"))
 JOB_TTL_SECONDS = 600
 MAX_ACTIVE_JOBS_PER_USER = 1
-MAX_ACTIVE_JOBS_GLOBAL = 1  # free Render: one Sherlock at a time
+MAX_ACTIVE_JOBS_GLOBAL = 1
 SESSION_HOURS = 12
+
+_MODE_TIMEOUTS = {
+    "social": (10, 120),
+    "community": (12, 150),
+    "gaming": (12, 150),
+    "developer": (12, 150),
+    "full": (12, 210),
+}
+
+
+def timeouts_for_mode(mode: str) -> tuple[int, int]:
+    mode = (mode or "social").lower()
+    site_d, search_d = _MODE_TIMEOUTS.get(mode, (SITE_TIMEOUT, SEARCH_TIMEOUT))
+    site = max(5, int(_env(f"SITE_TIMEOUT_{mode.upper()}", str(site_d)) or site_d))
+    search = max(30, int(_env(f"SEARCH_TIMEOUT_{mode.upper()}", str(search_d)) or search_d))
+    return site, search
+
+
+def estimate_seconds(mode: str, n_sites: int | None) -> str:
+    if mode == "full" or (n_sites and n_sites > 200):
+        return "1–3 хв"
+    site_t, search_t = timeouts_for_mode(mode)
+    if n_sites is None:
+        return f"до ~{search_t // 60} хв" if search_t >= 60 else f"до ~{search_t} с"
+    waves = max(1, (n_sites + SHERLOCK_WORKERS - 1) // SHERLOCK_WORKERS)
+    est = min(search_t, max(12, int(waves * min(2.5, site_t) * 0.8)))
+    if est >= 60:
+        return f"~{est // 60}–{(est // 60) + 1} хв"
+    return f"~{max(15, est)}–{est + 25} с"
+
 
 _in_container = bool(os.environ.get("PORT") or os.path.exists("/.dockerenv"))
 
@@ -121,13 +126,9 @@ app.config.update(
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
-# ---------------------------------------------------------------------------
-# Rate / login lock (RAM; single-worker)
-# ---------------------------------------------------------------------------
 _rate_lock = threading.Lock()
 _rate_hits: dict[str, float] = {}
 _login_fails: dict[str, list[float]] = {}
-
 _diag = {
     "last_search_elapsed": None,
     "last_search_at": None,
@@ -145,7 +146,6 @@ def _client_ip() -> str:
 
 
 def _session_uid() -> str:
-    """Stable per-browser id stored in signed session cookie."""
     if "uid" not in session:
         session["uid"] = secrets.token_hex(16)
         session.permanent = True
@@ -203,9 +203,6 @@ def _login_ok(ip: str) -> None:
         _login_fails.pop(ip, None)
 
 
-# ---------------------------------------------------------------------------
-# Jobs
-# ---------------------------------------------------------------------------
 _FOUND_RE = re.compile(
     r"^\s*\[\s*\+\s*\]\s+(?P<site>[^:]+?)\s*:\s*(?P<url>https?://\S+)",
     re.IGNORECASE,
@@ -216,8 +213,8 @@ _FOUND_RE = re.compile(
 class Job:
     id: str
     username: str
-    owner: str  # session uid
-    mode: str  # social | community | gaming | developer | full
+    owner: str
+    mode: str
     status: str = "queued"
     results: list[dict] = field(default_factory=list)
     error: str | None = None
@@ -225,35 +222,31 @@ class Job:
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
-    site_timeout: int = 12
-    search_timeout: int = 180
-    site_count: int = 0
+    batch_info: str | None = None
     proc: subprocess.Popen | None = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _seen: set[tuple[str, str]] = field(default_factory=set, repr=False)
 
-    def public(self, include_results: bool = True) -> dict[str, Any]:
+    def public(self) -> dict[str, Any]:
         elapsed = None
         if self.started_at:
             end = self.finished_at or time.time()
             elapsed = round(end - self.started_at, 1)
-        out: dict[str, Any] = {
+        with self._lock:
+            results = list(self.results)
+            batch_info = self.batch_info
+        return {
             "job_id": self.id,
             "username": self.username,
             "mode": self.mode,
             "status": self.status,
-            "count": len(self.results),
+            "count": len(results),
+            "results": results,
             "error": self.error,
             "return_code": self.return_code,
             "elapsed_sec": elapsed,
-            "site_timeout": self.site_timeout,
-            "search_timeout": self.search_timeout,
-            "site_count": self.site_count,
+            "batch_info": batch_info,
         }
-        if include_results:
-            with self._lock:
-                out["results"] = list(self.results)
-        return out
 
 
 _jobs_lock = threading.Lock()
@@ -263,7 +256,10 @@ _jobs: dict[str, Job] = {}
 def _cleanup_jobs() -> None:
     now = time.time()
     with _jobs_lock:
-        for jid in [j for j, x in _jobs.items() if x.finished_at and now - x.finished_at > JOB_TTL_SECONDS]:
+        for jid in [
+            j for j, x in _jobs.items()
+            if x.finished_at and now - x.finished_at > JOB_TTL_SECONDS
+        ]:
             del _jobs[jid]
 
 
@@ -289,7 +285,7 @@ def _kill_pg(proc: subprocess.Popen | None) -> None:
         except Exception:
             pass
     try:
-        proc.wait(timeout=4)
+        proc.wait(timeout=3)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -334,51 +330,34 @@ def _append_result(job: Job, item: dict) -> None:
             return
         job._seen.add(key)
         job.results.append(item)
-    log.info("SEARCH RESULT job=%s site=%s", job.id, item["site"])
+    log.info("SEARCH RESULT | job=%s | site=%s", job.id, item["site"])
 
 
-def _run_job(job: Job) -> None:
-    with job._lock:
-        if job.status == "cancelled":
-            return
-        job.status = "running"
-        job.started_at = time.time()
+def _chunked(items: list, size: int) -> list[list]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
-    log.info(
-        "SEARCH START job=%s username=%r mode=%s sites=%d timeout=%ss site_timeout=%ss workers=%d",
-        job.id, job.username, job.mode, job.site_count, job.search_timeout,
-        job.site_timeout, SHERLOCK_WORKERS,
-    )
 
+def _build_cmd(username: str, site_timeout: int, sites: list[str]) -> list[str]:
     data_json = Path(__file__).resolve().parent / "data.json"
-    if not data_json.is_file():
-        # fallback: package local
-        data_json = None
-
+    runner = Path(__file__).resolve().parent / "run_sherlock.py"
     cmd = [
-        sys.executable, "-m", "sherlock_project",
-        job.username,
+        sys.executable, str(runner),
+        username,
         "--print-found",
         "--no-color",
         "--no-txt",
-        "--timeout", str(job.site_timeout),
+        "--timeout", str(site_timeout),
     ]
-    if data_json is not None:
+    if data_json.is_file():
         cmd.extend(["--json", str(data_json)])
     else:
         cmd.append("--local")
-    site_list = categories.sites_for_mode(job.mode)
-    if site_list is not None:
-        if not site_list:
-            with job._lock:
-                job.status = "error"
-                job.error = f"У категорії «{job.mode}» немає сайтів у каталозі."
-                job.finished_at = time.time()
-            return
-        for site in site_list:
-            cmd.extend(["--site", site])
-        log.info("SEARCH MODE job=%s category=%s sites=%d", job.id, job.mode, len(site_list))
+    for site in sites:
+        cmd.extend(["--site", site])
+    return cmd
 
+
+def _run_one_batch(job: Job, cmd: list[str], deadline: float) -> int | None:
     proc: subprocess.Popen | None = None
     try:
         proc = subprocess.Popen(
@@ -390,106 +369,212 @@ def _run_job(job: Job) -> None:
             errors="replace",
             cwd="/tmp",
             start_new_session=True,
+            env={**os.environ, "SHERLOCK_WORKERS": str(SHERLOCK_WORKERS), "SHERLOCK_CHILD_MEMORY_MB": str(CHILD_MEMORY_MB)},
             bufsize=1,
         )
         with job._lock:
             job.proc = proc
 
-        deadline = time.time() + job.search_timeout
-        stdout_data: list[str] = []
-        stderr_data: list[str] = []
+        stderr_buf: list[str] = []
 
-        def _read_stderr() -> None:
+        def _stderr() -> None:
             try:
                 assert proc and proc.stderr
                 for line in proc.stderr:
-                    stderr_data.append(line)
+                    if len(stderr_buf) < 200:
+                        stderr_buf.append(line[:1000])
             except Exception:
                 pass
 
-        err_t = threading.Thread(target=_read_stderr, daemon=True)
-        err_t.start()
-
+        threading.Thread(target=_stderr, daemon=True).start()
         assert proc.stdout is not None
-        import select
 
         while True:
             if time.time() > deadline:
-                log.warning("SEARCH TIMEOUT job=%s", job.id)
+                log.warning("SEARCH TIMEOUT job=%s (batch)", job.id)
                 _kill_pg(proc)
                 with job._lock:
                     if job.status != "cancelled":
                         job.status = "timeout"
-                        job.error = f"Перевищено загальний ліміт {job.search_timeout} с. Часткові результати збережено."
+                        job.error = "Перевищено ліміт часу. Часткові результати збережено."
                         job.finished_at = time.time()
-                        job.proc = None
-                break
+                    job.proc = None
+                return None
 
             with job._lock:
                 if job.status == "cancelled":
-                    break
+                    _kill_pg(proc)
+                    job.proc = None
+                    return None
 
             if proc.poll() is not None:
                 rest = proc.stdout.read() or ""
                 for line in rest.splitlines():
-                    stdout_data.append(line + "\n")
                     item = _parse_line(line)
                     if item:
                         _append_result(job, item)
                 break
 
-            ready, _, _ = select.select([proc.stdout], [], [], 0.4)
+            ready, _, _ = select.select([proc.stdout], [], [], 0.3)
             if not ready:
                 continue
             line = proc.stdout.readline()
             if line:
-                stdout_data.append(line)
                 item = _parse_line(line)
                 if item:
                     _append_result(job, item)
             elif proc.poll() is not None:
                 break
 
-        err_t.join(timeout=2)
         rc = proc.returncode
         with job._lock:
-            job.return_code = rc
             job.proc = None
-            if job.status == "cancelled":
-                job.finished_at = job.finished_at or time.time()
-            elif job.status == "timeout":
-                pass
-            elif rc not in (0, None) and not job.results:
-                err = "".join(stderr_data).strip() or "".join(stdout_data).strip()
-                if len(err) > 400:
-                    err = err[:400] + "…"
-                job.status = "error"
-                job.error = f"Sherlock код {rc}." + (f" {err}" if err else "")
-                job.finished_at = time.time()
-            else:
-                job.status = "done"
-                job.finished_at = time.time()
+        if rc is not None and rc < 0:
+            log.error(
+                "SEARCH batch signal-kill rc=%s job=%s stderr=%s",
+                rc, job.id, "".join(stderr_buf)[:400],
+            )
+        return rc
+    except Exception:
+        _kill_pg(proc)
+        with job._lock:
+            job.proc = None
+        raise
 
-        elapsed = (job.finished_at or time.time()) - (job.started_at or time.time())
+
+def _run_job(job: Job) -> None:
+    with job._lock:
+        if job.status == "cancelled":
+            return
+        job.status = "running"
+        job.started_at = time.time()
+
+    site_timeout, search_timeout = timeouts_for_mode(job.mode)
+    site_list = categories.sites_for_mode(job.mode)
+
+    if site_list is None:
+        # full → explicit list so we can batch (never unconstrained 462 in one process wave)
+        cats = categories.ensure_catalog()
+        site_list = []
+        seen: set[str] = set()
+        for key in ("social", "community", "gaming", "developer", "other"):
+            for name in cats.get(key, []):
+                if name not in seen:
+                    seen.add(name)
+                    site_list.append(name)
+
+    if not site_list:
+        with job._lock:
+            job.status = "error"
+            job.error = f"У категорії «{job.mode}» немає сайтів."
+            job.finished_at = time.time()
+        return
+
+    if job.mode == "full" and not ALLOW_FULL_SEARCH:
+        with job._lock:
+            job.status = "error"
+            job.error = (
+                "Повний пошук вимкнено (ліміт пам'яті free Render). "
+                "Обери «Соцмережі» або іншу категорію. "
+                "Або встанови ALLOW_FULL_SEARCH=1 після збільшення плану."
+            )
+            job.finished_at = time.time()
+        return
+
+    batches = _chunked(site_list, SITE_BATCH_SIZE)
+    deadline = time.time() + search_timeout
+    n_sites = len(site_list)
+
+    log.info(
+        "SEARCH START | job=%s | username=%r | mode=%s | sites=%s | batches=%s | "
+        "batch_size=%s | site_timeout=%s | search_timeout=%s | workers=%s",
+        job.id, job.username, job.mode, n_sites, len(batches),
+        SITE_BATCH_SIZE, site_timeout, search_timeout, SHERLOCK_WORKERS,
+    )
+    log.info("SEARCH MEMORY GUARD | job=%s | child_limit_mb=%s", job.id, CHILD_MEMORY_MB)
+
+    last_rc: int | None = 0
+    try:
+        for bi, batch in enumerate(batches, 1):
+            with job._lock:
+                if job.status in ("cancelled", "timeout"):
+                    break
+                job.batch_info = f"{bi}/{len(batches)}"
+
+            if time.time() > deadline:
+                with job._lock:
+                    if job.status not in ("cancelled",):
+                        job.status = "timeout"
+                        job.error = f"Ліміт {search_timeout} с. Часткові результати збережено."
+                        job.finished_at = time.time()
+                break
+
+            log.info(
+                "SEARCH BATCH | job=%s | %s/%s | batch_sites=%s | found=%s",
+                job.id, bi, len(batches), len(batch), len(job.results),
+            )
+            cmd = _build_cmd(job.username, site_timeout, batch)
+            try:
+                last_rc = _run_one_batch(job, cmd, deadline)
+            except Exception as exc:
+                log.exception("batch error job=%s", job.id)
+                with job._lock:
+                    if job.status not in ("cancelled", "timeout"):
+                        job.status = "error"
+                        job.error = (
+                            f"Помилка Sherlock: {type(exc).__name__}: {exc}. "
+                            "Ймовірний брак пам'яті — спробуй «Соцмережі»."
+                        )
+                        job.finished_at = time.time()
+                break
+
+            with job._lock:
+                if job.status in ("cancelled", "timeout"):
+                    break
+
+            time.sleep(0.25)  # let RSS settle between batches
+
+        elapsed = time.time() - (job.started_at or time.time())
+        with job._lock:
+            if job.status == "running":
+                if last_rc in (-9, -15) and not job.results:
+                    job.status = "error"
+                    job.error = (
+                        "Sherlock завершився без результатів. На free Render це може бути ліміт пам'яті; "
+                        "поточні безпечні налаштування: 6 workers / 20 сайтів у пакеті."
+                    )
+                elif last_rc is not None and last_rc < 0 and not job.results:
+                    job.status = "error"
+                    job.error = f"Sherlock завершено сигналом {-last_rc}. Спробуй режим «Соцмережі»."
+                elif last_rc not in (0, None) and not job.results:
+                    job.status = "error"
+                    job.error = f"Sherlock код {last_rc}."
+                else:
+                    job.status = "done"
+                job.return_code = last_rc
+                job.finished_at = time.time()
+                job.proc = None
+                job.batch_info = None
+
         _diag["last_search_elapsed"] = round(elapsed, 1)
         _diag["last_search_at"] = time.time()
         _diag["last_search_username"] = job.username
         _diag["last_search_found"] = len(job.results)
-
         log.info(
-            "SEARCH FINISHED job=%s status=%s found=%d elapsed=%.1fs rc=%s",
-            job.id, job.status, len(job.results), elapsed, rc,
+            "SEARCH FINISHED | job=%s | status=%s | found=%d | elapsed=%.1fs | rc=%s",
+            job.id, job.status, len(job.results), elapsed, last_rc,
         )
-
     except Exception as exc:
         log.exception("SEARCH FAILED job=%s: %s", job.id, exc)
+        with job._lock:
+            proc = job.proc
+            job.proc = None
         _kill_pg(proc)
         with job._lock:
             if job.status not in ("cancelled", "timeout"):
                 job.status = "error"
                 job.error = f"{type(exc).__name__}: {exc}"
             job.finished_at = time.time()
-            job.proc = None
 
 
 def _cancel_job(job: Job) -> bool:
@@ -502,13 +587,10 @@ def _cancel_job(job: Job) -> bool:
         proc = job.proc
         job.proc = None
     _kill_pg(proc)
-    log.info("SEARCH CANCELLED job=%s found=%d", job.id, len(job.results))
+    log.info("SEARCH CANCELLED | job=%s | found=%d", job.id, len(job.results))
     return True
 
 
-# ---------------------------------------------------------------------------
-# Auth helpers
-# ---------------------------------------------------------------------------
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -524,14 +606,11 @@ def csrf_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if APP_PASSWORD and not _check_csrf():
-            return jsonify({"ok": False, "error": "Невірний CSRF-токен. Онови сторінку."}), 403
+            return jsonify({"ok": False, "error": "Невірний CSRF. Онови сторінку."}), 403
         return fn(*args, **kwargs)
     return wrapper
 
 
-# ---------------------------------------------------------------------------
-# Routes: pages
-# ---------------------------------------------------------------------------
 @app.get("/login")
 def login():
     if not APP_PASSWORD:
@@ -547,29 +626,22 @@ def login_post():
         return redirect(url_for("index"))
     ip = _client_ip()
     if _login_locked(ip):
-        log.warning("Login LOCKED ip=%s", ip)
         return render_template(
             "login.html",
-            error=f"Забагато спроб. Спробуй через {LOGIN_LOCK_SECONDS // 60} хв.",
+            error=f"Забагато спроб. Зачекай {LOGIN_LOCK_SECONDS // 60} хв.",
             csrf=_csrf_token(),
         ), 429
-
     if not _check_csrf():
-        return render_template("login.html", error="Онови сторінку і спробуй знову.", csrf=_csrf_token()), 403
-
-    password = request.form.get("password", "")
-    if secrets.compare_digest(password, APP_PASSWORD):
+        return render_template("login.html", error="Онови сторінку.", csrf=_csrf_token()), 403
+    if secrets.compare_digest(request.form.get("password", ""), APP_PASSWORD):
         session.clear()
         session["authenticated"] = True
         session.permanent = True
         _session_uid()
         _csrf_token()
         _login_ok(ip)
-        log.info("Login OK ip=%s", ip)
         return redirect(url_for("index"))
-
     _login_fail(ip)
-    log.warning("Login FAIL ip=%s", ip)
     return render_template("login.html", error="Неправильний пароль.", csrf=_csrf_token()), 401
 
 
@@ -586,9 +658,6 @@ def index():
     return render_template("index.html", csrf=_csrf_token())
 
 
-# ---------------------------------------------------------------------------
-# Health & diagnostics
-# ---------------------------------------------------------------------------
 @app.get("/healthz")
 @app.get("/health")
 def healthz():
@@ -603,6 +672,7 @@ def api_diag():
         for j in _jobs.values():
             if j.status in ("queued", "running") and j.owner == _session_uid():
                 active += 1
+        global_running = sum(1 for j in _jobs.values() if j.status in ("queued", "running"))
 
     sherlock_ver = "?"
     try:
@@ -613,10 +683,6 @@ def api_diag():
         sherlock_ver = (p.stdout or p.stderr or "").strip().split("\n")[0][:120] or "?"
     except Exception as exc:
         sherlock_ver = f"error: {exc}"
-
-    cat = categories.get_status()
-    with _jobs_lock:
-        global_running = sum(1 for j in _jobs.values() if j.status in ("queued", "running"))
 
     return jsonify({
         "ok": True,
@@ -632,23 +698,37 @@ def api_diag():
         "active_jobs_global": global_running,
         "site_timeout": SITE_TIMEOUT,
         "search_timeout": SEARCH_TIMEOUT,
-        "mode_limits": MODE_LIMITS,
-        "sherlock_workers_requested": SHERLOCK_WORKERS,
-        "sherlock_workers_effective": 20,
         "rate_seconds": RATE_SECONDS,
-        "catalog": cat,
+        "workers": SHERLOCK_WORKERS,
+        "batch_size": SITE_BATCH_SIZE,
+        "allow_full_search": ALLOW_FULL_SEARCH,
+        "catalog": categories.get_status(),
     })
 
 
-# ---------------------------------------------------------------------------
-# API: search
-# ---------------------------------------------------------------------------
 @app.get("/api/modes")
 @login_required
 def api_modes():
     try:
         modes = categories.modes_public()
-        return jsonify({"ok": True, "modes": modes, "catalog": categories.get_status()})
+        for m in modes:
+            m["eta"] = estimate_seconds(m["id"], m.get("count"))
+            site_t, search_t = timeouts_for_mode(m["id"])
+            m["site_timeout"] = site_t
+            m["search_timeout"] = search_t
+            if m["id"] == "full":
+                if not ALLOW_FULL_SEARCH:
+                    m["warning"] = "Повний пошук вимкнено на free-плані (пам'ять)."
+                    m["disabled"] = True
+                else:
+                    m["warning"] = "Повний пошук може зайняти 1–3 хв і навантажити free Render."
+        return jsonify({
+            "ok": True,
+            "modes": modes,
+            "catalog": categories.get_status(),
+            "workers": SHERLOCK_WORKERS,
+            "batch_size": SITE_BATCH_SIZE,
+        })
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc), "catalog": categories.get_status()}), 503
 
@@ -667,52 +747,46 @@ def api_search_start():
     if not USERNAME_RE.fullmatch(username):
         return jsonify({"ok": False, "error": "Username: 1–64 символи (A-Z a-z 0-9 . - _)."}), 400
 
-    owner = _session_uid()
-    ip = _client_ip()
-    # Rate limit: both session and IP (new sessions cannot bypass)
-    for key in (f"search:uid:{owner}", f"search:ip:{ip}"):
-        err = _rate_ok(key)
-        if err:
-            return jsonify({"ok": False, "error": err}), 429
+    if mode == "full" and not ALLOW_FULL_SEARCH:
+        return jsonify({
+            "ok": False,
+            "error": "Повний пошук вимкнено через ліміт пам'яті. Обери «Соцмережі».",
+        }), 400
 
-    # Catalog must be healthy
     try:
         categories.ensure_catalog()
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
 
+    owner = _session_uid()
+    ip = _client_ip()
+    for key in (f"search:uid:{owner}", f"search:ip:{ip}"):
+        err = _rate_ok(key)
+        if err:
+            return jsonify({"ok": False, "error": err}), 429
+
     with _jobs_lock:
         global_active = [j for j in _jobs.values() if j.status in ("queued", "running")]
         if len(global_active) >= MAX_ACTIVE_JOBS_GLOBAL:
             j0 = global_active[0]
+            _, j_search_t = timeouts_for_mode(j0.mode)
             left = None
             if j0.started_at:
-                left = max(0, int(j0.search_timeout - (time.time() - j0.started_at)))
-            msg = "Сервер зайнятий іншим пошуком."
+                left = max(0, int(j_search_t - (time.time() - j0.started_at)))
+            msg = f"Сервер виконує інший пошук (режим: {j0.mode})."
             if left is not None:
-                msg += f" Поточний пошук завершиться орієнтовно через ~{left} с."
-            else:
-                msg += " Спробуй трохи пізніше."
+                msg += f" Ще ~{left} с."
             return jsonify({"ok": False, "error": msg}), 503
 
-        user_active = sum(1 for j in global_active if j.owner == owner)
-        if user_active >= MAX_ACTIVE_JOBS_PER_USER:
-            return jsonify({"ok": False, "error": "Уже є активний пошук. Скасуй або дочекайся."}), 409
+        if sum(1 for j in global_active if j.owner == owner) >= MAX_ACTIVE_JOBS_PER_USER:
+            return jsonify({"ok": False, "error": "Уже є активний пошук. Натисни Стоп."}), 409
 
-        limits = MODE_LIMITS[mode]
-        mode_sites = categories.sites_for_mode(mode)
-        site_count = len(mode_sites) if mode_sites is not None else int(categories.get_status().get("total_usable") or 0)
         job_id = uuid.uuid4().hex[:16]
-        job = Job(
-            id=job_id, username=username, owner=owner, mode=mode,
-            site_timeout=limits["site_timeout"],
-            search_timeout=limits["search_timeout"],
-            site_count=site_count,
-        )
+        job = Job(id=job_id, username=username, owner=owner, mode=mode)
         _jobs[job_id] = job
 
     threading.Thread(target=_run_job, args=(job,), daemon=True, name=f"sh-{job_id}").start()
-    log.info("SEARCH QUEUED job=%s username=%r mode=%s owner=%s", job_id, username, mode, owner[:8])
+    log.info("SEARCH QUEUED | job=%s | username=%r | mode=%s", job_id, username, mode)
     return jsonify({"ok": True, "job_id": job_id, "status": "queued", "mode": mode}), 202
 
 
@@ -722,7 +796,7 @@ def api_search_status(job_id: str):
     job = _get_owned_job(job_id, _session_uid())
     if not job:
         return jsonify({"ok": False, "error": "Завдання не знайдено."}), 404
-    return jsonify({"ok": True, **job.public(include_results=True)})
+    return jsonify({"ok": True, **job.public()})
 
 
 @app.post("/api/search/<job_id>/cancel")
@@ -736,9 +810,6 @@ def api_search_cancel(job_id: str):
     return jsonify({"ok": True, "cancelled": cancelled, **job.public()})
 
 
-# ---------------------------------------------------------------------------
-# Export
-# ---------------------------------------------------------------------------
 @app.post("/api/export")
 @login_required
 @csrf_required
@@ -768,14 +839,12 @@ def api_export():
         for item in results:
             if isinstance(item, dict):
                 lines.append(f"{item.get('site', '')}\t{item.get('url', '')}")
-        body = "\n".join(lines) + "\n"
         return Response(
-            body,
+            "\n".join(lines) + "\n",
             mimetype="text/plain; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="osint_{safe}.txt"', "Cache-Control": "no-store"},
         )
 
-    # csv default
     buf = io.StringIO()
     buf.write("\ufeff")
     w = csv.writer(buf)
@@ -794,16 +863,12 @@ def api_export():
     )
 
 
-# CSRF bootstrap for SPA-ish frontend
 @app.get("/api/session")
 @login_required
 def api_session():
     return jsonify({"ok": True, "csrf": _csrf_token()})
 
 
-# ---------------------------------------------------------------------------
-# PWA static-ish routes (served from templates/static paths)
-# ---------------------------------------------------------------------------
 @app.get("/manifest.webmanifest")
 def manifest():
     return Response(
@@ -826,41 +891,15 @@ def manifest():
 
 @app.get("/sw.js")
 def service_worker():
-    # Minimal SW: network-first for app shell; no offline Sherlock.
-    js = """
-self.addEventListener('install', e => { self.skipWaiting(); });
-self.addEventListener('activate', e => { e.waitUntil(clients.claim()); });
-self.addEventListener('fetch', e => {
-  // pass-through; presence enables "Add to Home Screen"
-});
-"""
-    return Response(js, mimetype="application/javascript")
-
-
-def _sherlock_version() -> str:
-    try:
-        p = subprocess.run(
-            [sys.executable, "-m", "sherlock_project", "--version"],
-            capture_output=True, text=True, timeout=15, cwd="/tmp",
-        )
-        return (p.stdout or p.stderr or "").strip().split("\n")[0][:120] or "?"
-    except Exception as exc:
-        return f"error: {exc}"
-
-
-def _startup_smoke_test() -> None:
-    cat = categories.get_status()
-    version = _sherlock_version()
-    log.info(
-        "SMOKE OK=%s | sherlock=%s | data_json=%s | sha=%s | usable=%s | nsfw=%s | counts=%s | workers_requested=%s | workers_effective=20",
-        cat.get("ok"), version, bool(cat.get("path")), cat.get("sha256_16"),
-        cat.get("total_usable"), cat.get("nsfw_excluded"), cat.get("counts"), SHERLOCK_WORKERS,
+    return Response(
+        "self.addEventListener('install',e=>self.skipWaiting());"
+        "self.addEventListener('activate',e=>e.waitUntil(clients.claim()));",
+        mimetype="application/javascript",
     )
 
 
-# Graceful SIGTERM (Render shutdown)
 def _handle_sigterm(signum, frame):
-    log.info("SIGTERM received — cancelling active jobs")
+    log.info("SIGTERM — cancelling jobs")
     with _jobs_lock:
         jobs = list(_jobs.values())
     for j in jobs:
@@ -871,10 +910,18 @@ def _handle_sigterm(signum, frame):
 
 signal.signal(signal.SIGTERM, _handle_sigterm)
 
-# Load Sherlock catalog once at startup and run a local smoke test.
 categories.preload()
-log.info("Catalog status: %s", categories.get_status())
-_startup_smoke_test()
+_st = categories.get_status()
+if _st.get("ok"):
+    _c = _st.get("counts") or {}
+    log.info(
+        "CATALOG OK | total=%s | social=%s | community=%s | gaming=%s | developer=%s | other=%s | sha=%s | workers=%s | batch=%s",
+        _st.get("total_usable"), _c.get("social"), _c.get("community"),
+        _c.get("gaming"), _c.get("developer"), _c.get("other"),
+        _st.get("sha256_16"), SHERLOCK_WORKERS, SITE_BATCH_SIZE,
+    )
+else:
+    log.error("CATALOG FAIL | %s", _st.get("error"))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
