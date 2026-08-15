@@ -22,7 +22,7 @@
 
 | Key | Default | Опис |
 |-----|---------|------|
-| `SHERLOCK_WORKERS` | `20` | Паралельні HTTP-запити (max 40) |
+| `SHERLOCK_WORKERS` | `3` | Паралельні HTTP-запити всередині Sherlock (для free Render; cap 4) |
 | `SITE_TIMEOUT` | `12` | Fallback per-site; режими мають свої значення |
 | `SEARCH_TIMEOUT` | `180` | Fallback overall |
 | `RATE_SECONDS` | `12` | Пауза між пошуками (IP+session) |
@@ -69,7 +69,7 @@ Path: **`/healthz`**
 |------|--------|-----------------|
 | Швидко перевірити людину | 📱 Соцмережі | десятки секунд |
 | Форуми / читання | 💬 Спільноти | ~1–2 хв |
-| Максимум покриття | 🌐 Повний | **1–3 хв** (free Render) |
+| Максимум покриття | 🌐 Повний | вимкнено на free Render за замовчуванням |
 
 На free tier **не запускай Full без потреби**. На сервері одночасно лише **один** Sherlock.
 
@@ -85,14 +85,13 @@ Path: **`/healthz`**
 
 ## Free Render (512MB) — важливо
 
-- Default: `SHERLOCK_WORKERS=6`, `SITE_BATCH_SIZE=20` (сайти пакетами, не всі одразу).
+- Default: `SHERLOCK_WORKERS=3`, `SITE_BATCH_SIZE=10`, `CHILD_MEMORY_MB=352`.
+- Сайти перевіряються пакетами; після кожного пакета є пауза для осідання RSS.
 - Перший тест: **лише 📱 Соцмережі**.
-- Якщо знову `Ran out of memory` / 502:
-  - `SHERLOCK_WORKERS=6`
-  - `SITE_BATCH_SIZE=20`
-  - `ALLOW_FULL_SEARCH=0`
+- `ALLOW_FULL_SEARCH=0` залишай увімкненим на free Render.
+- Якщо дочірній Sherlock отримає SIGKILL/OOM, поточний job завершується з помилкою і **не запускає наступний пакет**.
 - Не натискай ПОШУК повторно, поки йде активний job.
 
 
 ### Memory-safe Sherlock launcher
-`run_sherlock.py` запускає Sherlock у дочірньому процесі та застосовує `SHERLOCK_WORKERS` саме всередині цього процесу. Це важливо: патч класу у Flask-процесі не впливає на окремий `python -m sherlock_project`. Для free Render базові значення — 6 workers, 20 сайтів у пакеті, ліміт дочірнього процесу 384 MB.
+`run_sherlock.py` запускає Sherlock у дочірньому процесі та застосовує `SHERLOCK_WORKERS` саме всередині цього процесу. Це важливо: патч класу у Flask-процесі не впливає на окремий `python -m sherlock_project`. Для free Render базові значення — 3 workers, 10 сайтів у пакеті, ліміт дочірнього процесу 352 MB.

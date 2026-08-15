@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import io
+import importlib.metadata
 import json
 import logging
 import os
@@ -54,11 +55,11 @@ def _env(name: str, default: str | None = None) -> str | None:
 SECRET_KEY = _env("SECRET_KEY")
 APP_PASSWORD = _env("APP_PASSWORD")
 
-# Free Render: default workers=8 (not 20). Hard cap 24.
-SHERLOCK_WORKERS = min(12, max(1, int(_env("SHERLOCK_WORKERS", "6") or "6")))
-SITE_BATCH_SIZE = max(10, min(30, int(_env("SITE_BATCH_SIZE", "20") or "20")))
+# Free Render: conservative defaults for the 512 MB plan; hard cap 4.
+SHERLOCK_WORKERS = min(4, max(1, int(_env("SHERLOCK_WORKERS", "3") or "3")))
+SITE_BATCH_SIZE = max(6, min(15, int(_env("SITE_BATCH_SIZE", "10") or "10")))
 ALLOW_FULL_SEARCH = (_env("ALLOW_FULL_SEARCH", "0") or "0") not in ("0", "false", "False", "no")
-CHILD_MEMORY_MB = max(256, min(448, int(_env("CHILD_MEMORY_MB", "384") or "384")))
+CHILD_MEMORY_MB = max(280, min(420, int(_env("CHILD_MEMORY_MB", "352") or "352")))
 
 SITE_TIMEOUT = max(5, int(_env("SITE_TIMEOUT", "12") or "12"))
 SEARCH_TIMEOUT = max(30, int(_env("SEARCH_TIMEOUT", "180") or "180"))
@@ -369,7 +370,7 @@ def _run_one_batch(job: Job, cmd: list[str], deadline: float) -> int | None:
             errors="replace",
             cwd="/tmp",
             start_new_session=True,
-            env={**os.environ, "SHERLOCK_WORKERS": str(SHERLOCK_WORKERS), "SHERLOCK_CHILD_MEMORY_MB": str(CHILD_MEMORY_MB)},
+            env={**os.environ, "SHERLOCK_WORKERS": str(SHERLOCK_WORKERS), "SHERLOCK_CHILD_MEMORY_MB": str(CHILD_MEMORY_MB), "PYTHONMALLOC": "malloc", "MALLOC_ARENA_MAX": "1", "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"},
             bufsize=1,
         )
         with job._lock:
@@ -532,25 +533,42 @@ def _run_job(job: Job) -> None:
                 if job.status in ("cancelled", "timeout"):
                     break
 
-            time.sleep(0.25)  # let RSS settle between batches
+            # A killed child is not a successful partial batch. Stop immediately so
+            # the next batch cannot create another memory spike.
+            if last_rc is not None and last_rc < 0:
+                with job._lock:
+                    if job.status == "running":
+                        job.status = "error"
+                        if last_rc in (-9, -15):
+                            job.error = (
+                                "Пошук зупинено системою під час запуску Sherlock (ймовірний ліміт пам'яті Render). "
+                                f"Збережено {len(job.results)} результатів. Зменшимо workers/розмір пакета, якщо це повториться."
+                            )
+                        else:
+                            job.error = f"Sherlock завершено сигналом {-last_rc}. Збережено {len(job.results)} результатів."
+                        job.return_code = last_rc
+                        job.finished_at = time.time()
+                        job.proc = None
+                        job.batch_info = None
+                break
+
+            if last_rc not in (0, None):
+                with job._lock:
+                    if job.status == "running":
+                        job.status = "error"
+                        job.error = f"Sherlock завершив пакет з кодом {last_rc}. Збережено {len(job.results)} результатів."
+                        job.return_code = last_rc
+                        job.finished_at = time.time()
+                        job.proc = None
+                        job.batch_info = None
+                break
+
+            time.sleep(max(0.25, float(_env("BATCH_PAUSE_SECONDS", "0.75") or "0.75")))  # let RSS settle between batches
 
         elapsed = time.time() - (job.started_at or time.time())
         with job._lock:
             if job.status == "running":
-                if last_rc in (-9, -15) and not job.results:
-                    job.status = "error"
-                    job.error = (
-                        "Sherlock завершився без результатів. На free Render це може бути ліміт пам'яті; "
-                        "поточні безпечні налаштування: 6 workers / 20 сайтів у пакеті."
-                    )
-                elif last_rc is not None and last_rc < 0 and not job.results:
-                    job.status = "error"
-                    job.error = f"Sherlock завершено сигналом {-last_rc}. Спробуй режим «Соцмережі»."
-                elif last_rc not in (0, None) and not job.results:
-                    job.status = "error"
-                    job.error = f"Sherlock код {last_rc}."
-                else:
-                    job.status = "done"
+                job.status = "done"
                 job.return_code = last_rc
                 job.finished_at = time.time()
                 job.proc = None
@@ -655,7 +673,15 @@ def logout():
 @login_required
 def index():
     _session_uid()
-    return render_template("index.html", csrf=_csrf_token())
+    response = render_template("index.html", csrf=_csrf_token())
+    return Response(response, mimetype="text/html", headers={"Cache-Control": "no-store, max-age=0"})
+
+
+@app.after_request
+def _no_store_dynamic(response):
+    if request.path == "/" or request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 @app.get("/healthz")
@@ -701,6 +727,8 @@ def api_diag():
         "rate_seconds": RATE_SECONDS,
         "workers": SHERLOCK_WORKERS,
         "batch_size": SITE_BATCH_SIZE,
+        "batch_pause_seconds": float(_env("BATCH_PAUSE_SECONDS", "0.75") or "0.75"),
+        "child_memory_mb": CHILD_MEMORY_MB,
         "allow_full_search": ALLOW_FULL_SEARCH,
         "catalog": categories.get_status(),
     })
@@ -728,6 +756,8 @@ def api_modes():
             "catalog": categories.get_status(),
             "workers": SHERLOCK_WORKERS,
             "batch_size": SITE_BATCH_SIZE,
+        "batch_pause_seconds": float(_env("BATCH_PAUSE_SECONDS", "0.75") or "0.75"),
+        "child_memory_mb": CHILD_MEMORY_MB,
         })
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc), "catalog": categories.get_status()}), 503
@@ -919,6 +949,15 @@ if _st.get("ok"):
         _st.get("total_usable"), _c.get("social"), _c.get("community"),
         _c.get("gaming"), _c.get("developer"), _c.get("other"),
         _st.get("sha256_16"), SHERLOCK_WORKERS, SITE_BATCH_SIZE,
+    )
+    try:
+        _sherlock_version = importlib.metadata.version("sherlock-project")
+    except Exception:
+        _sherlock_version = "?"
+    log.info(
+        "SMOKE OK | sherlock=%s | data_sha=%s | usable=%s | social=%s | workers=%s | batch=%s | child_memory_mb=%s",
+        _sherlock_version, _st.get("sha256_16"), _st.get("total_usable"),
+        _c.get("social"), SHERLOCK_WORKERS, SITE_BATCH_SIZE, CHILD_MEMORY_MB,
     )
 else:
     log.error("CATALOG FAIL | %s", _st.get("error"))
