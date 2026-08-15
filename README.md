@@ -10,8 +10,8 @@
 ## Free Render safety
 
 - Gunicorn: 1 worker / 2 threads
-- `SHERLOCK_WORKERS=2`
-- `SITE_BATCH_SIZE=10`
+- `SHERLOCK_WORKERS=1`
+- `SITE_BATCH_SIZE=5`
 - `CHILD_MEMORY_MB=300`
 - Social: `SITE_TIMEOUT_SOCIAL=15`, `SEARCH_TIMEOUT_SOCIAL=300`
 - `MALLOC_ARENA_MAX=2`
@@ -48,7 +48,7 @@
 6. Натисни **ПОШУК один раз**.
 7. Під час пошуку UI показує пакет `X/Y`; не запускай другий пошук.
 
-Очікувано: Social перевіряється пакетами по 10 сайтів. На Free Render перший запуск після cold start може бути повільнішим.
+Очікувано: Social перевіряється пакетами по 5 сайтів. На Free Render перший запуск після cold start може бути повільнішим.
 
 ## Важливо
 

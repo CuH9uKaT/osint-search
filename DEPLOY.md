@@ -5,12 +5,12 @@
 | Параметр | Значення |
 |----------|----------|
 | Gunicorn | 1 worker / 2 threads |
-| Sherlock workers | **2** |
-| Batch | **10** сайтів |
-| Child memory | **~300 MB** |
+| Sherlock workers | **1** |
+| Batch | **5** сайтів |
+| Child memory | **~360 MB** |
 | Режим | лише **Соцмережі** (~72) |
 | Full | **вимкнено** |
-| Social timeouts | site **15** с / total **300** с |
+| Social timeouts | site **12** с / total **600** с |
 | Одночасних job | **1** |
 | Повторний запуск | заблокований, доки йде пошук |
 | STOP + partial | так |
@@ -18,7 +18,7 @@
 ## UI під час пошуку
 
 ```
-Соцмережі · пакет 3/8 · знайдено 17
+Соцмережі · пакет 3/15 · знайдено 17
 ```
 
 Після завершення:
@@ -32,13 +32,13 @@
 1. Заміни **весь** каталог з ZIP (не змішуй зі старим app.py).
 2. Commit → Push.
 3. `APP_PASSWORD` у Render.
-4. Дочекайся деплою → Logs: `CATALOG OK`, `workers=2`.
+4. Дочекайся деплою → Logs: `CATALOG OK`, `workers=1`.
 5. **Один** пошук у режимі Соцмережі. Не клікай повторно.
 
 ## Якщо знову OOM
 
 ```
 SHERLOCK_WORKERS=1
-SITE_BATCH_SIZE=8
-CHILD_MEMORY_MB=280
+SITE_BATCH_SIZE=5
+CHILD_MEMORY_MB=360
 ```

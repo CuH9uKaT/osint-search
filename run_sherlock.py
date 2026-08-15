@@ -12,7 +12,7 @@ import os
 def _limit_memory() -> None:
     try:
         import resource
-        mb = max(256, min(448, int(os.environ.get("SHERLOCK_CHILD_MEMORY_MB", "300"))))
+        mb = max(256, min(360, int(os.environ.get("SHERLOCK_CHILD_MEMORY_MB", "360"))))
         limit = mb * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
     except Exception:
@@ -23,12 +23,12 @@ def main() -> None:
     _limit_memory()
     import sherlock_project.sherlock as sh
 
-    workers = min(2, max(1, int(os.environ.get("SHERLOCK_WORKERS", "2"))))
+    workers = 1  # Free Render: one Sherlock request worker only
     base = sh.SherlockFuturesSession
 
     class PatchedSession(base):
-        def __init__(self, *args, max_workers=2, **kwargs):
-            max_workers = min(workers, max(1, max_workers))
+        def __init__(self, *args, max_workers=1, **kwargs):
+            max_workers = workers
             super().__init__(*args, max_workers=max_workers, **kwargs)
 
     sh.SherlockFuturesSession = PatchedSession

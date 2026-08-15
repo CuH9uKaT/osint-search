@@ -10,16 +10,16 @@ services:
       - key: APP_PASSWORD
         sync: false
       - key: SHERLOCK_WORKERS
-        value: "2"
+        value: "1"
       - key: SITE_BATCH_SIZE
-        value: "10"
+        value: "5"
       - key: CHILD_MEMORY_MB
-        value: "300"
+        value: "360"
       - key: ALLOW_FULL_SEARCH
         value: "0"
       - key: RATE_SECONDS
         value: "20"
       - key: SITE_TIMEOUT_SOCIAL
-        value: "15"
+        value: "12"
       - key: SEARCH_TIMEOUT_SOCIAL
-        value: "300"
+        value: "600"

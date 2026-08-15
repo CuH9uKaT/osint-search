@@ -19,4 +19,4 @@ USER appuser
 EXPOSE 10000
 
 # Free Render 512MB: 1 worker, 2 threads
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 2 --timeout 360 --graceful-timeout 20 --max-requests 40 --max-requests-jitter 10 --access-logfile - --error-logfile - app:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 2 --timeout 360 --graceful-timeout 20 --access-logfile - --error-logfile - app:app"]

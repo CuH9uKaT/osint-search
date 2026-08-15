@@ -54,11 +54,11 @@ def _env(name: str, default: str | None = None) -> str | None:
 SECRET_KEY = _env("SECRET_KEY")
 APP_PASSWORD = _env("APP_PASSWORD")
 
-# Free Render 512MB: default workers=2, batch=10. Hard cap 2 workers for this build.
-SHERLOCK_WORKERS = min(8, max(1, int(_env("SHERLOCK_WORKERS", "2") or "2")))
-SITE_BATCH_SIZE = max(5, min(15, int(_env("SITE_BATCH_SIZE", "10") or "10")))
+# Free Render 512MB: one Sherlock worker and tiny batches.
+SHERLOCK_WORKERS = 1
+SITE_BATCH_SIZE = max(5, min(5, int(_env("SITE_BATCH_SIZE", "5") or "5")))
 ALLOW_FULL_SEARCH = (_env("ALLOW_FULL_SEARCH", "0") or "0") not in ("0", "false", "False", "no")
-CHILD_MEMORY_MB = max(200, min(400, int(_env("CHILD_MEMORY_MB", "300") or "300")))
+CHILD_MEMORY_MB = max(256, min(360, int(_env("CHILD_MEMORY_MB", "360") or "360")))
 
 SITE_TIMEOUT = max(5, int(_env("SITE_TIMEOUT", "12") or "12"))
 SEARCH_TIMEOUT = max(30, int(_env("SEARCH_TIMEOUT", "180") or "180"))
@@ -72,7 +72,7 @@ SESSION_HOURS = 12
 
 _MODE_TIMEOUTS = {
     # Social: more time per site + overall (small catalog, slow free CPU)
-    "social": (15, 300),
+    "social": (12, 600),
     "community": (12, 180),
     "gaming": (12, 180),
     "developer": (12, 180),
@@ -94,7 +94,7 @@ def estimate_seconds(mode: str, n_sites: int | None) -> str:
     site_t, search_t = timeouts_for_mode(mode)
     if n_sites is None:
         return f"до ~{search_t // 60} хв" if search_t >= 60 else f"до ~{search_t} с"
-    waves = max(1, (n_sites + SHERLOCK_WORKERS - 1) // SHERLOCK_WORKERS)
+    waves = max(1, (n_sites + SITE_BATCH_SIZE - 1) // SITE_BATCH_SIZE)
     est = min(search_t, max(12, int(waves * min(2.5, site_t) * 0.8)))
     if est >= 60:
         return f"~{est // 60}–{(est // 60) + 1} хв"
@@ -452,11 +452,27 @@ def _run_one_batch(job: Job, cmd: list[str], deadline: float) -> int | None:
         rc = proc.returncode
         with job._lock:
             job.proc = None
-        if rc is not None and rc < 0:
-            log.error(
-                "SEARCH batch signal-kill rc=%s job=%s stderr=%s",
-                rc, job.id, "".join(stderr_buf)[:400],
-            )
+        if rc not in (0, None):
+            detail = "".join(stderr_buf)[:700].strip()
+            log.error("SEARCH batch failed rc=%s job=%s stderr=%s", rc, job.id, detail)
+            # Never continue to another batch after a child failure. This is critical
+            # on 512MB Render: repeating a failed child can turn one failure into OOM.
+            with job._lock:
+                if job.status == "running":
+                    job.status = "error"
+                    if rc < 0:
+                        job.error = (
+                            "Пошук зупинено: дочірній процес Sherlock завершився сигналом "
+                            f"{-rc}. Часткові результати збережено; наступні пакети не запускаються."
+                        )
+                    else:
+                        job.error = (
+                            f"Sherlock завершився з кодом {rc}. Часткові результати збережено; "
+                            "наступні пакети не запускаються."
+                        )
+                    job.return_code = rc
+                    job.finished_at = time.time()
+            return rc
         return rc
     except Exception:
         _kill_pg(proc)
@@ -550,6 +566,8 @@ def _run_job(job: Job) -> None:
             cmd = _build_cmd(job.username, site_timeout, batch)
             try:
                 last_rc = _run_one_batch(job, cmd, deadline)
+                if last_rc not in (0, None):
+                    break
             except Exception as exc:
                 log.exception("batch error job=%s", job.id)
                 with job._lock:
@@ -571,7 +589,13 @@ def _run_job(job: Job) -> None:
                     f"пакет {bi}/{len(batches)} · знайдено {len(job.results)}"
                 )
 
-            time.sleep(0.4)  # let RSS settle between batches on free tier
+            # Child process has exited; give the allocator a moment to release RSS.
+            try:
+                import gc
+                gc.collect()
+            except Exception:
+                pass
+            time.sleep(0.75)
 
         elapsed = time.time() - (job.started_at or time.time())
         with job._lock:
