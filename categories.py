@@ -18,31 +18,17 @@ from typing import Any
 
 log = logging.getLogger("osint.categories")
 
+# UI exposes only these two modes (internal allowlists still used for catalog stats)
 CATEGORIES_META = {
     "social": {
         "label": "Соцмережі",
         "emoji": "📱",
-        "desc": "Соціальні мережі та профілі",
-    },
-    "community": {
-        "label": "Спільноти",
-        "emoji": "💬",
-        "desc": "Форуми, читання, фандоми, Q&A",
-    },
-    "gaming": {
-        "label": "Ігри",
-        "emoji": "🎮",
-        "desc": "Ігрові платформи та трекери",
-    },
-    "developer": {
-        "label": "Розробка",
-        "emoji": "💻",
-        "desc": "Код, DevOps, CTF, tech, creative pro",
+        "desc": "Тільки соціальні мережі та профілі",
     },
     "full": {
-        "label": "Повний",
+        "label": "Повний пошук",
         "emoji": "🌐",
-        "desc": "Увесь каталог (без NSFW)",
+        "desc": "Усі доступні категорії (без NSFW)",
     },
 }
 
@@ -269,14 +255,17 @@ def sites_for_mode(mode: str) -> list[str] | None:
 
 
 def modes_public() -> list[dict]:
+    """Only Social + Full for the UI."""
     cats = ensure_catalog()
     st = get_status()
     out = []
     for key, meta in CATEGORIES_META.items():
         if key == "full":
-            count = st.get("total_usable") or 0
+            count = int(st.get("total_usable") or 0)
+        elif key == "social":
+            count = len(cats.get("social", []))
         else:
-            count = len(cats.get(key, []))
+            continue
         out.append({
             "id": key,
             "label": meta["label"],

@@ -100,7 +100,8 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
     <label for="username">Username</label>
     <input id="username" type="text" maxlength="64" placeholder="наприклад johndoe" autocomplete="username" enterkeyhint="search">
 
-    <div class="modes" id="modes" role="group" aria-label="Режим">
+    <label style="margin-top:4px">Режим пошуку</label>
+    <div class="modes" id="modes" role="group" aria-label="Режим пошуку">
       <!-- filled by JS from /api/modes -->
     </div>
     <div id="modeHint" class="muted" style="margin:0 0 10px;font-size:.85rem"></div>
@@ -147,7 +148,7 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
 
     <div class="notice">
       Збіг = сторінка пройшла перевірку Sherlock. Це не доказ особи. Стоп зберігає вже знайдене.
-      Категорії з локального data.json (NSFW виключено). «Соцмережі» — найшвидший старт; «Повний» може тривати 1–3 хв.
+      Режим «Соцмережі» — ~70 профілів, низьке навантаження (підходить для free Render). Повний пошук на free-плані вимкнено.
     </div>
   </div>
 </div>
@@ -321,18 +322,17 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
       box.innerHTML = "";
       modesMeta = {};
       for (const m of modes) {
+        // On free Render full is disabled — hide it entirely to avoid confusion
+        if (m.disabled) continue;
         modesMeta[m.id] = m;
         const b = document.createElement("button");
         b.type = "button";
         b.dataset.mode = m.id;
+        const countStr = m.count != null ? `${m.count} сайтів` : "";
         const eta = m.eta ? ` · ${m.eta}` : "";
-        b.innerHTML = `${m.emoji || ""} ${m.label}<small>${m.count != null ? m.count + " сайтів" : ""}${eta}</small>`;
+        b.innerHTML = `${m.emoji || ""} ${m.label}<small>${countStr}${eta}</small>`;
         if (m.id === mode) b.classList.add("active");
-        if (m.disabled) {
-          b.disabled = true;
-          b.style.opacity = "0.45";
-        }
-        b.onclick = () => { if (!m.disabled) setMode(m.id); };
+        b.onclick = () => setMode(m.id);
         box.appendChild(b);
       }
       if (!modes.find(m => m.id === mode) && modes[0]) setMode(modes[0].id);
@@ -355,11 +355,17 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
       if (!r.ok || !data.ok) throw new Error(data.error || "Помилка статусу");
 
       setStatus(data.status);
-      if (data.batch_info && (data.status === "running" || data.status === "queued")) {
+      if (data.progress_label) {
+        $("pStatus").textContent = data.progress_label;
+      } else if (data.batch_info && (data.status === "running" || data.status === "queued")) {
         $("pStatus").textContent = (STATUS[data.status] || data.status) + " · пакет " + data.batch_info;
       }
       current.results = data.results || [];
       $("count").textContent = String(current.results.length);
+      if (data.sites_total) {
+        $("st").textContent = (STATUS[data.status] || data.status) +
+          (data.sites_done != null ? ` · ${data.sites_done}/${data.sites_total}` : "");
+      }
 
       if (current.results.length !== knownCount) {
         knownCount = current.results.length;
@@ -368,6 +374,7 @@ input[type=text],input[type=search]{width:100%;padding:14px;border-radius:12px;b
 
       const terminal = ["done", "error", "cancelled", "timeout"].includes(data.status);
       if (terminal) {
+        if (data.progress_label) $("pStatus").textContent = data.progress_label;
         $("took").textContent = data.elapsed_sec != null
           ? data.elapsed_sec + " с"
           : Math.round((Date.now() - startedAt) / 1000) + " с";

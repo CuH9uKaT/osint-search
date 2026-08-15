@@ -1,56 +1,55 @@
-# OSINT Search (final)
+# OSINT Search — Free Render safe
 
-Веб-обгортка над [Sherlock](https://github.com/sherlock-project/sherlock) 0.16.0:
+Вебінтерфейс для перевірки username через Sherlock на публічних сервісах.
 
-- фоновий job, live-результати, реальний **STOP**
-- pinned **`data.json`** (`--json`), NSFW виключено
-- категорії: Соцмережі / Спільноти / Ігри / Розробка / Повний
-- mode-specific timeouts + memory-safe `SHERLOCK_WORKERS` (default 3) + batches (default 10 sites)
-- auth, CSRF, 1 глобальний пошук, rate limit IP+session
-- PWA, mobile UI, CSV/JSON/TXT, `/healthz`, діагностика
+## Режими
 
-Деплой: див. **[DEPLOY.md](DEPLOY.md)**.
+- **📱 Соцмережі** — основний режим, 72 сайти з поточного pinned `data.json`.
+- **🌐 Повний** — вимкнений за замовчуванням на Free Render (`ALLOW_FULL_SEARCH=0`), бо 462 сайти можуть перевищити ліміт пам’яті 512 MB.
 
-## Локально
+## Free Render safety
 
-```bash
-export SECRET_KEY=$(python -c 'import secrets;print(secrets.token_hex(32))')
-export APP_PASSWORD=devpass
-export SHERLOCK_WORKERS=3
-pip install -r requirements.txt
-python app.py
-```
+- Gunicorn: 1 worker / 2 threads
+- `SHERLOCK_WORKERS=2`
+- `SITE_BATCH_SIZE=10`
+- `CHILD_MEMORY_MB=300`
+- Social: `SITE_TIMEOUT_SOCIAL=15`, `SEARCH_TIMEOUT_SOCIAL=300`
+- `MALLOC_ARENA_MAX=2`
+- Один активний пошук на весь сервіс
+- Пошук виконується пакетами; часткові результати зберігаються
+- STOP завершує process group Sherlock
 
-## Режими (типові counts з bundled data.json)
+## Render Environment Variables
 
-| Режим | ~N | Timeout site / total |
-|--------|-----|----------------------|
-| 📱 Соцмережі | 72 | 10 / 120 с |
-| 💬 Спільноти | 101 | 12 / 150 с |
-| 🎮 Ігри | 49 | 12 / 150 с |
-| 💻 Розробка | 100 | 12 / 150 с |
-| 🌐 Повний | 462 | 12 / 210 с |
+Обов’язково:
 
-Точні числа — у UI та `/api/modes` після старту.
+- `APP_PASSWORD` — задай власний сильний пароль у Render
+- `SECRET_KEY` — Render генерує автоматично через `render.yaml`
 
-## Налаштування пам'яті
+Основні:
 
-- `SHERLOCK_WORKERS=3` — кількість паралельних HTTP-запитів усередині Sherlock.
-- `SITE_BATCH_SIZE=10` — скільки сайтів передається одному дочірньому запуску.
-- `CHILD_MEMORY_MB=352` — жорсткий ліміт адресного простору Sherlock-процесу на Linux; батьківський Flask/Gunicorn не обмежується цим значенням.
-- `ALLOW_FULL_SEARCH=0` — безпечне значення для free Render. Повний пошук можна ввімкнути лише після збільшення ресурсів і тесту.
+| Змінна | Значення |
+|---|---:|
+| `SHERLOCK_WORKERS` | `2` |
+| `SITE_BATCH_SIZE` | `10` |
+| `CHILD_MEMORY_MB` | `300` |
+| `ALLOW_FULL_SEARCH` | `0` |
+| `RATE_SECONDS` | `20` |
+| `SITE_TIMEOUT_SOCIAL` | `15` |
+| `SEARCH_TIMEOUT_SOCIAL` | `300` |
 
-## API (скорочено)
+## Після деплою
 
-- `GET /api/modes` — режими, eta, warning
-- `POST /api/search` `{username, mode}` → `job_id`
-- `GET /api/search/<id>` — статус + results
-- `POST /api/search/<id>/cancel`
-- `POST /api/export` `{format: csv|json|txt}`
-- `GET /api/diag` · `GET /healthz`
+1. Дочекайся `Live`.
+2. Відкрий сайт.
+3. Увійди за `APP_PASSWORD`.
+4. Обери **📱 Соцмережі**.
+5. Для першого тесту використай вигаданий username, наприклад `testuser123456`.
+6. Натисни **ПОШУК один раз**.
+7. Під час пошуку UI показує пакет `X/Y`; не запускай другий пошук.
 
-Mutating requests: header `X-CSRF-Token`.
+Очікувано: Social перевіряється пакетами по 10 сайтів. На Free Render перший запуск після cold start може бути повільнішим.
 
+## Важливо
 
-### Memory-safe Sherlock launcher
-`run_sherlock.py` запускає Sherlock у дочірньому процесі та застосовує `SHERLOCK_WORKERS` саме всередині цього процесу. Це важливо: патч класу у Flask-процесі не впливає на окремий `python -m sherlock_project`. Для free Render базові значення — 3 workers, 10 сайтів у пакеті, ліміт дочірнього процесу 352 MB. Якщо дочірній процес буде примусово завершено, job зупиняється одразу, щоб не створювати наступний стрибок пам’яті.
+Результат Sherlock означає лише те, що публічна сторінка пройшла його перевірку username. Це не доводить, що профіль належить конкретній особі. Будь-які збіги потрібно перевіряти незалежно та використовувати лише законно доступну публічну інформацію.

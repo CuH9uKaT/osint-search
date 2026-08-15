@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import csv
 import io
-import importlib.metadata
 import json
 import logging
 import os
@@ -55,11 +54,11 @@ def _env(name: str, default: str | None = None) -> str | None:
 SECRET_KEY = _env("SECRET_KEY")
 APP_PASSWORD = _env("APP_PASSWORD")
 
-# Free Render: conservative defaults for the 512 MB plan; hard cap 4.
-SHERLOCK_WORKERS = min(4, max(1, int(_env("SHERLOCK_WORKERS", "3") or "3")))
-SITE_BATCH_SIZE = max(6, min(15, int(_env("SITE_BATCH_SIZE", "10") or "10")))
+# Free Render 512MB: default workers=2, batch=10. Hard cap 2 workers for this build.
+SHERLOCK_WORKERS = min(8, max(1, int(_env("SHERLOCK_WORKERS", "2") or "2")))
+SITE_BATCH_SIZE = max(5, min(15, int(_env("SITE_BATCH_SIZE", "10") or "10")))
 ALLOW_FULL_SEARCH = (_env("ALLOW_FULL_SEARCH", "0") or "0") not in ("0", "false", "False", "no")
-CHILD_MEMORY_MB = max(280, min(420, int(_env("CHILD_MEMORY_MB", "352") or "352")))
+CHILD_MEMORY_MB = max(200, min(400, int(_env("CHILD_MEMORY_MB", "300") or "300")))
 
 SITE_TIMEOUT = max(5, int(_env("SITE_TIMEOUT", "12") or "12"))
 SEARCH_TIMEOUT = max(30, int(_env("SEARCH_TIMEOUT", "180") or "180"))
@@ -72,11 +71,12 @@ MAX_ACTIVE_JOBS_GLOBAL = 1
 SESSION_HOURS = 12
 
 _MODE_TIMEOUTS = {
-    "social": (10, 120),
-    "community": (12, 150),
-    "gaming": (12, 150),
-    "developer": (12, 150),
-    "full": (12, 210),
+    # Social: more time per site + overall (small catalog, slow free CPU)
+    "social": (15, 300),
+    "community": (12, 180),
+    "gaming": (12, 180),
+    "developer": (12, 180),
+    "full": (12, 240),
 }
 
 
@@ -224,6 +224,9 @@ class Job:
     started_at: float | None = None
     finished_at: float | None = None
     batch_info: str | None = None
+    sites_total: int = 0
+    sites_done: int = 0
+    progress_label: str | None = None
     proc: subprocess.Popen | None = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _seen: set[tuple[str, str]] = field(default_factory=set, repr=False)
@@ -233,20 +236,39 @@ class Job:
         if self.started_at:
             end = self.finished_at or time.time()
             elapsed = round(end - self.started_at, 1)
+        mode_label = {"social": "Соцмережі", "full": "Повний"}.get(self.mode, self.mode)
         with self._lock:
             results = list(self.results)
             batch_info = self.batch_info
+            sites_total = self.sites_total
+            sites_done = self.sites_done
+            progress_label = self.progress_label
+            found = len(results)
+            if progress_label is None:
+                if self.status in ("done", "cancelled", "timeout", "error") and sites_total:
+                    progress_label = (
+                        f"{mode_label} · Перевірено {sites_done}/{sites_total} · знайдено {found}"
+                    )
+                elif batch_info and sites_total:
+                    progress_label = (
+                        f"{mode_label} · пакет {batch_info} · знайдено {found}"
+                    )
+                elif self.status == "running":
+                    progress_label = f"{mode_label} · знайдено {found}"
         return {
             "job_id": self.id,
             "username": self.username,
             "mode": self.mode,
             "status": self.status,
-            "count": len(results),
+            "count": found,
             "results": results,
             "error": self.error,
             "return_code": self.return_code,
             "elapsed_sec": elapsed,
             "batch_info": batch_info,
+            "sites_total": sites_total,
+            "sites_done": sites_done,
+            "progress_label": progress_label,
         }
 
 
@@ -370,7 +392,7 @@ def _run_one_batch(job: Job, cmd: list[str], deadline: float) -> int | None:
             errors="replace",
             cwd="/tmp",
             start_new_session=True,
-            env={**os.environ, "SHERLOCK_WORKERS": str(SHERLOCK_WORKERS), "SHERLOCK_CHILD_MEMORY_MB": str(CHILD_MEMORY_MB), "PYTHONMALLOC": "malloc", "MALLOC_ARENA_MAX": "1", "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"},
+            env={**os.environ, "SHERLOCK_WORKERS": str(SHERLOCK_WORKERS), "SHERLOCK_CHILD_MEMORY_MB": str(CHILD_MEMORY_MB)},
             bufsize=1,
         )
         with job._lock:
@@ -476,8 +498,8 @@ def _run_job(job: Job) -> None:
             job.status = "error"
             job.error = (
                 "Повний пошук вимкнено (ліміт пам'яті free Render). "
-                "Обери «Соцмережі» або іншу категорію. "
-                "Або встанови ALLOW_FULL_SEARCH=1 після збільшення плану."
+                "Доступний лише режим «Соцмережі». "
+                "На більшому плані можна встановити ALLOW_FULL_SEARCH=1."
             )
             job.finished_at = time.time()
         return
@@ -485,6 +507,12 @@ def _run_job(job: Job) -> None:
     batches = _chunked(site_list, SITE_BATCH_SIZE)
     deadline = time.time() + search_timeout
     n_sites = len(site_list)
+    with job._lock:
+        job.sites_total = n_sites
+        job.sites_done = 0
+        job.progress_label = (
+            f"{'Соцмережі' if job.mode == 'social' else 'Повний'} · пакет 0/{len(batches)} · знайдено 0"
+        )
 
     log.info(
         "SEARCH START | job=%s | username=%r | mode=%s | sites=%s | batches=%s | "
@@ -501,6 +529,11 @@ def _run_job(job: Job) -> None:
                 if job.status in ("cancelled", "timeout"):
                     break
                 job.batch_info = f"{bi}/{len(batches)}"
+                job.sites_done = min(job.sites_total, (bi - 1) * SITE_BATCH_SIZE)
+                job.progress_label = (
+                    f"{'Соцмережі' if job.mode == 'social' else 'Повний'} · "
+                    f"пакет {bi}/{len(batches)} · знайдено {len(job.results)}"
+                )
 
             if time.time() > deadline:
                 with job._lock:
@@ -532,47 +565,40 @@ def _run_job(job: Job) -> None:
             with job._lock:
                 if job.status in ("cancelled", "timeout"):
                     break
+                job.sites_done = min(job.sites_total, bi * SITE_BATCH_SIZE)
+                job.progress_label = (
+                    f"{'Соцмережі' if job.mode == 'social' else 'Повний'} · "
+                    f"пакет {bi}/{len(batches)} · знайдено {len(job.results)}"
+                )
 
-            # A killed child is not a successful partial batch. Stop immediately so
-            # the next batch cannot create another memory spike.
-            if last_rc is not None and last_rc < 0:
-                with job._lock:
-                    if job.status == "running":
-                        job.status = "error"
-                        if last_rc in (-9, -15):
-                            job.error = (
-                                "Пошук зупинено системою під час запуску Sherlock (ймовірний ліміт пам'яті Render). "
-                                f"Збережено {len(job.results)} результатів. Зменшимо workers/розмір пакета, якщо це повториться."
-                            )
-                        else:
-                            job.error = f"Sherlock завершено сигналом {-last_rc}. Збережено {len(job.results)} результатів."
-                        job.return_code = last_rc
-                        job.finished_at = time.time()
-                        job.proc = None
-                        job.batch_info = None
-                break
-
-            if last_rc not in (0, None):
-                with job._lock:
-                    if job.status == "running":
-                        job.status = "error"
-                        job.error = f"Sherlock завершив пакет з кодом {last_rc}. Збережено {len(job.results)} результатів."
-                        job.return_code = last_rc
-                        job.finished_at = time.time()
-                        job.proc = None
-                        job.batch_info = None
-                break
-
-            time.sleep(max(0.25, float(_env("BATCH_PAUSE_SECONDS", "0.75") or "0.75")))  # let RSS settle between batches
+            time.sleep(0.4)  # let RSS settle between batches on free tier
 
         elapsed = time.time() - (job.started_at or time.time())
         with job._lock:
             if job.status == "running":
-                job.status = "done"
+                if last_rc in (-9, -15) and not job.results:
+                    job.status = "error"
+                    job.error = (
+                        "Sherlock завершився без результатів. На free Render це часто ліміт пам'яті. "
+                        f"Поточні налаштування: {SHERLOCK_WORKERS} workers / {SITE_BATCH_SIZE} сайтів у пакеті."
+                    )
+                elif last_rc is not None and last_rc < 0 and not job.results:
+                    job.status = "error"
+                    job.error = f"Sherlock завершено сигналом {-last_rc}. Спробуй режим «Соцмережі»."
+                elif last_rc not in (0, None) and not job.results:
+                    job.status = "error"
+                    job.error = f"Sherlock код {last_rc}."
+                else:
+                    job.status = "done"
                 job.return_code = last_rc
                 job.finished_at = time.time()
                 job.proc = None
+                job.sites_done = job.sites_total
                 job.batch_info = None
+                ml = "Соцмережі" if job.mode == "social" else "Повний"
+                job.progress_label = (
+                    f"{ml} · Перевірено {job.sites_done}/{job.sites_total} · знайдено {len(job.results)}"
+                )
 
         _diag["last_search_elapsed"] = round(elapsed, 1)
         _diag["last_search_at"] = time.time()
@@ -602,6 +628,11 @@ def _cancel_job(job: Job) -> bool:
         job.status = "cancelled"
         job.error = "Скасовано. Часткові результати збережено."
         job.finished_at = time.time()
+        ml = "Соцмережі" if job.mode == "social" else "Повний"
+        job.progress_label = (
+            f"{ml} · Скасовано · перевірено ~{job.sites_done}/{job.sites_total or '?'} · "
+            f"знайдено {len(job.results)}"
+        )
         proc = job.proc
         job.proc = None
     _kill_pg(proc)
@@ -673,15 +704,7 @@ def logout():
 @login_required
 def index():
     _session_uid()
-    response = render_template("index.html", csrf=_csrf_token())
-    return Response(response, mimetype="text/html", headers={"Cache-Control": "no-store, max-age=0"})
-
-
-@app.after_request
-def _no_store_dynamic(response):
-    if request.path == "/" or request.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store, max-age=0"
-    return response
+    return render_template("index.html", csrf=_csrf_token())
 
 
 @app.get("/healthz")
@@ -727,8 +750,6 @@ def api_diag():
         "rate_seconds": RATE_SECONDS,
         "workers": SHERLOCK_WORKERS,
         "batch_size": SITE_BATCH_SIZE,
-        "batch_pause_seconds": float(_env("BATCH_PAUSE_SECONDS", "0.75") or "0.75"),
-        "child_memory_mb": CHILD_MEMORY_MB,
         "allow_full_search": ALLOW_FULL_SEARCH,
         "catalog": categories.get_status(),
     })
@@ -739,25 +760,24 @@ def api_diag():
 def api_modes():
     try:
         modes = categories.modes_public()
+        out_modes = []
         for m in modes:
+            if m["id"] == "full" and not ALLOW_FULL_SEARCH:
+                continue  # hide Full entirely on free tier
             m["eta"] = estimate_seconds(m["id"], m.get("count"))
             site_t, search_t = timeouts_for_mode(m["id"])
             m["site_timeout"] = site_t
             m["search_timeout"] = search_t
             if m["id"] == "full":
-                if not ALLOW_FULL_SEARCH:
-                    m["warning"] = "Повний пошук вимкнено на free-плані (пам'ять)."
-                    m["disabled"] = True
-                else:
-                    m["warning"] = "Повний пошук може зайняти 1–3 хв і навантажити free Render."
+                m["warning"] = "Повний пошук важкий для free Render (1–3 хв)."
+            out_modes.append(m)
+        modes = out_modes
         return jsonify({
             "ok": True,
             "modes": modes,
             "catalog": categories.get_status(),
             "workers": SHERLOCK_WORKERS,
             "batch_size": SITE_BATCH_SIZE,
-        "batch_pause_seconds": float(_env("BATCH_PAUSE_SECONDS", "0.75") or "0.75"),
-        "child_memory_mb": CHILD_MEMORY_MB,
         })
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc), "catalog": categories.get_status()}), 503
@@ -771,7 +791,7 @@ def api_search_start():
     data = request.get_json(silent=True) or {}
     username = str(data.get("username", "")).strip()
     mode = str(data.get("mode", "social")).strip().lower()
-    if mode not in ("social", "community", "gaming", "developer", "full"):
+    if mode not in ("social", "full"):
         mode = "social"
 
     if not USERNAME_RE.fullmatch(username):
@@ -780,7 +800,7 @@ def api_search_start():
     if mode == "full" and not ALLOW_FULL_SEARCH:
         return jsonify({
             "ok": False,
-            "error": "Повний пошук вимкнено через ліміт пам'яті. Обери «Соцмережі».",
+            "error": "Повний пошук вимкнено на free Render. Доступні лише «Соцмережі».",
         }), 400
 
     try:
@@ -949,15 +969,6 @@ if _st.get("ok"):
         _st.get("total_usable"), _c.get("social"), _c.get("community"),
         _c.get("gaming"), _c.get("developer"), _c.get("other"),
         _st.get("sha256_16"), SHERLOCK_WORKERS, SITE_BATCH_SIZE,
-    )
-    try:
-        _sherlock_version = importlib.metadata.version("sherlock-project")
-    except Exception:
-        _sherlock_version = "?"
-    log.info(
-        "SMOKE OK | sherlock=%s | data_sha=%s | usable=%s | social=%s | workers=%s | batch=%s | child_memory_mb=%s",
-        _sherlock_version, _st.get("sha256_16"), _st.get("total_usable"),
-        _c.get("social"), SHERLOCK_WORKERS, SITE_BATCH_SIZE, CHILD_MEMORY_MB,
     )
 else:
     log.error("CATALOG FAIL | %s", _st.get("error"))
